@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="../styles/common.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup">
+    <h1>Debug Helper</h1>
+    <div id="status" class="status">Idle</div>
+
+    <div class="controls">
+      <button id="btn-toggle" class="btn btn-primary">Start Recording</button>
+      <button id="btn-screenshot" class="btn" disabled>Screenshot</button>
+    </div>
+
+    <div id="note-bar" class="note-bar hidden">
+      <input type="text" id="note-input" placeholder="Add a note..." autocomplete="off">
+      <button id="btn-add-note" class="btn btn-sm btn-primary">+</button>
+    </div>
+
+    <div id="stats" class="stats hidden">
+      <div class="stat"><span id="stat-events">0</span> events</div>
+      <div class="stat"><span id="stat-duration">0s</span></div>
+      <div class="stat"><span id="stat-screenshots">0</span> screenshots</div>
+    </div>
+
+    <div id="export-filters" class="export-filters hidden">
+      <label><input type="checkbox" data-filter="steps" checked> Steps</label>
+      <label><input type="checkbox" data-filter="console" checked> Console</label>
+      <label><input type="checkbox" data-filter="screenshots" checked> Screenshots</label>
+      <label><input type="checkbox" data-filter="network" checked> Network</label>
+      <label><input type="checkbox" data-filter="networkErrorsOnly" checked> Errors only</label>
+      <label><input type="checkbox" data-filter="dedup" checked> Dedup clicks</label>
+      <label><input type="checkbox" data-filter="skipScrollZero" checked> Skip scroll-0</label>
+      <label><input type="checkbox" data-filter="screenshotAsFile" checked> Screenshots as files</label>
+    </div>
+
+    <div class="controls">
+      <button id="btn-export-md" class="btn btn-sm" disabled>Export Markdown</button>
+      <button id="btn-export-json" class="btn btn-sm" disabled>Export JSON</button>
+      <button id="btn-export-toon" class="btn btn-sm" disabled>Export TOON</button>
+      <button id="btn-sidepanel" class="btn btn-sm">Open Panel</button>
+    </div>
+
+    <div id="export-result" class="export-result hidden">
+      <div class="export-result-header">
+        <span id="export-info"></span>
+        <button id="btn-copy-result" class="btn btn-sm btn-primary">Copy</button>
+      </div>
+      <pre id="export-preview" class="export-preview"></pre>
+    </div>
+
+    <div id="sessions-section" class="sessions-section">
+      <h3>Recent Sessions</h3>
+      <div id="sessions-list"></div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

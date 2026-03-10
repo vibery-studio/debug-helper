@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="../styles/common.css">
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="panel">
+    <header>
+      <h1>Debug Helper</h1>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button id="btn-quick-export" class="btn btn-sm" title="Quick export: copy markdown to clipboard">Quick Copy</button>
+        <div id="status" class="status-badge">Idle</div>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="feed">Live Feed</button>
+      <button class="tab" data-tab="screenshots">Screenshots</button>
+      <button class="tab" data-tab="history">History</button>
+      <button class="tab" data-tab="export">Export</button>
+    </nav>
+
+    <div class="filters" id="filters">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="event:dom">DOM</button>
+      <button class="filter-btn" data-filter="event:console">Console</button>
+      <button class="filter-btn" data-filter="event:network">Network</button>
+      <button class="filter-btn" data-filter="event:note">Notes</button>
+    </div>
+
+    <div class="note-bar hidden" id="note-bar">
+      <input type="text" id="note-input" placeholder="Add a note or command..." autocomplete="off">
+      <button id="btn-add-note" class="btn btn-sm btn-primary">Add</button>
+    </div>
+
+    <section id="tab-feed" class="tab-content active">
+      <div id="feed" class="feed"></div>
+    </section>
+
+    <section id="tab-screenshots" class="tab-content">
+      <div class="controls-row">
+        <button id="btn-capture" class="btn btn-sm btn-primary">Capture Screenshot</button>
+      </div>
+      <div id="gallery" class="gallery"></div>
+    </section>
+
+    <section id="tab-history" class="tab-content">
+      <div class="history-actions">
+        <button id="btn-delete-selected" class="btn btn-sm" style="color:var(--danger)" disabled>Delete Selected</button>
+        <button id="btn-select-all" class="btn btn-sm">Select All</button>
+        <button id="btn-delete-all" class="btn btn-sm" style="color:var(--danger)">Delete All</button>
+      </div>
+      <div id="history-list"></div>
+    </section>
+
+    <section id="tab-export" class="tab-content">
+      <div class="export-filters-group">
+        <div class="filter-section">
+          <div class="filter-section-title">Events</div>
+          <label><input type="checkbox" data-filter="steps" checked> Steps</label>
+          <label><input type="checkbox" data-filter="console" checked> Console</label>
+          <label><input type="checkbox" data-filter="screenshots" checked> Screenshots</label>
+        </div>
+        <div class="filter-section">
+          <div class="filter-section-title">Network</div>
+          <label><input type="checkbox" data-filter="network" checked> Include network</label>
+          <label><input type="checkbox" data-filter="networkErrorsOnly" checked> Errors only (4xx/5xx)</label>
+        </div>
+        <div class="filter-section">
+          <div class="filter-section-title">Clean up</div>
+          <label><input type="checkbox" data-filter="dedup" checked> Deduplicate rapid clicks</label>
+          <label><input type="checkbox" data-filter="skipScrollZero" checked> Skip scroll-to-0</label>
+          <label><input type="checkbox" data-filter="screenshotAsFile" checked> Screenshots as files (no inline base64)</label>
+        </div>
+      </div>
+      <div class="export-controls">
+        <button id="btn-preview-md" class="btn">Preview Markdown</button>
+        <button id="btn-preview-json" class="btn">Preview JSON</button>
+        <button id="btn-preview-toon" class="btn">Preview TOON</button>
+        <button id="btn-debug-events" class="btn" style="font-size:10px;opacity:0.6">Debug</button>
+      </div>
+      <div id="export-preview-wrap" class="hidden">
+        <div class="export-preview-header">
+          <span id="preview-info"></span>
+          <button id="btn-copy" class="btn btn-sm btn-primary">Copy to Clipboard</button>
+          <button id="btn-download" class="btn btn-sm">Download ZIP</button>
+        </div>
+        <pre id="export-preview" class="export-preview"></pre>
+      </div>
+    </section>
+  </div>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

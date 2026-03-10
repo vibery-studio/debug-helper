@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Screenshot Annotator</title>
+  <link rel="stylesheet" href="../styles/common.css">
+  <link rel="stylesheet" href="annotator.css">
+</head>
+<body>
+  <div class="toolbar">
+    <div class="tool-group">
+      <button class="tool-btn" data-tool="select" title="Select/Move (V)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3 1l10 7.5-4.5 1L11 15l-2.5.5-2.5-5.5L2 12z"/></svg>
+      </button>
+      <button class="tool-btn active" data-tool="rect" title="Rectangle (R)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="3" width="12" height="10" rx="1.5"/></svg>
+      </button>
+      <button class="tool-btn" data-tool="arrow" title="Arrow (A)">&#8599;</button>
+      <button class="tool-btn" data-tool="text" title="Text (T)">T</button>
+      <button class="tool-btn" data-tool="freehand" title="Freehand (F)">&#9998;</button>
+      <button class="tool-btn" data-tool="counter" title="Counter (N)">
+        <svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="currentColor" opacity="0.15" stroke="currentColor" stroke-width="1.5"/><text x="8" y="12" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
+      </button>
+      <button class="tool-btn" data-tool="crop" title="Crop (C)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 1v11h11M1 4h11v11"/></svg>
+      </button>
+    </div>
+    <div class="tool-group">
+      <input type="color" id="color" value="#e53e3e" title="Color">
+      <select id="lineWidth">
+        <option value="2">Thin</option>
+        <option value="3" selected>Medium</option>
+        <option value="5">Thick</option>
+      </select>
+    </div>
+    <div class="tool-group">
+      <button id="btn-zoom-out" class="btn btn-sm" title="Zoom out">−</button>
+      <span id="zoom-level">Fit</span>
+      <button id="btn-zoom-in" class="btn btn-sm" title="Zoom in">+</button>
+      <button id="btn-zoom-fit" class="btn btn-sm" title="Fit to window">Fit</button>
+    </div>
+    <div class="tool-group">
+      <button id="btn-error" class="btn btn-sm btn-danger">Mark as Error</button>
+      <button id="btn-undo" class="btn btn-sm">Undo</button>
+      <button id="btn-save" class="btn btn-sm btn-primary">Save</button>
+    </div>
+  </div>
+
+  <div class="workspace">
+    <div class="canvas-container" id="container">
+      <canvas id="canvas"></canvas>
+      <button id="btn-reopen-layers" class="canvas-reopen-btn" title="Show layers panel">&#9776;</button>
+    </div>
+
+    <div class="layers-panel" id="layers-panel">
+      <div class="layers-header">
+        <span>Layers</span>
+        <button id="btn-toggle-layers" class="btn btn-sm" title="Toggle panel">&#9776;</button>
+      </div>
+      <div id="layers-list" class="layers-list"></div>
+      <div class="layers-actions">
+        <button id="btn-layer-up" class="btn btn-sm" title="Move up" disabled>&#9650;</button>
+        <button id="btn-layer-down" class="btn btn-sm" title="Move down" disabled>&#9660;</button>
+        <button id="btn-layer-delete" class="btn btn-sm" title="Delete" disabled>&#10005;</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="annotator.js"></script>
+</body>
+</html>

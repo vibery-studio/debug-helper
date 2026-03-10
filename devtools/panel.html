@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="../styles/common.css">
+  <style>
+    body { padding: 12px; }
+    h2 { font-size: 14px; margin-bottom: 8px; }
+    .request-list { max-height: 400px; overflow-y: auto; }
+    .request-item {
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      font-family: monospace;
+    }
+    .request-item.error { background: #fef2f2; }
+    .status { font-weight: 600; }
+    .status.err { color: var(--danger); }
+    #count { color: var(--text-secondary); font-weight: normal; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>Enhanced Network Capture <span id="count">(0 requests)</span></h2>
+  <div id="requests" class="request-list"></div>
+  <script src="panel.js"></script>
+</body>
+</html>
