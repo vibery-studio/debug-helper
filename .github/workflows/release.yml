@@ -21,7 +21,7 @@ jobs:
       - name: Build ZIP
         run: |
           zip -r debug-helper-${{ steps.version.outputs.version }}.zip . \
-            -x '.git/*' '.github/*' 'images/*.png' '*.json' '!manifest.json'
+            -x '.git/*' '.github/*' 'images/*.png' 'debug-report-*.json'
 
       - name: Create versioned release
         uses: softprops/action-gh-release@v2
