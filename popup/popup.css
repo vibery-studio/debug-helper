@@ -115,6 +115,11 @@ h1 {
   margin: 0;
 }
 
+.btn-sidepanel {
+  width: 100%;
+  margin-bottom: 12px;
+}
+
 .sessions-section h3 {
   font-size: 12px;
   margin: 8px 0 4px;
