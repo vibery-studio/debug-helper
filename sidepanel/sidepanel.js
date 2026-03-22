@@ -659,10 +659,7 @@ $('#btn-quick-export').addEventListener('click', async () => {
   btn.textContent = 'Exporting...';
   btn.disabled = true;
   try {
-    const result = await send({ type: 'export:generate', sessionId: sid, format: 'markdown', filters: {
-      steps: true, console: true, network: true, networkErrorsOnly: true,
-      screenshots: true, dedup: true, skipScrollZero: true, screenshotAsFile: true
-    }});
+    const result = await send({ type: 'export:generate', sessionId: sid, format: 'markdown', filters: getExportFilters() });
     if (result?.markdown) {
       try { await navigator.clipboard.writeText(result.markdown); }
       catch { /* fallback */ const ta = document.createElement('textarea'); ta.value = result.markdown; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
