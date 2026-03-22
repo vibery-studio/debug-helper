@@ -28,6 +28,17 @@ header h1 { font-size: 14px; }
   animation: pulse 1.5s infinite;
 }
 
+.btn-record {
+  background: #dc2626;
+  color: #fff;
+  border-color: #dc2626;
+}
+
+.btn-record.recording {
+  background: #6b7280;
+  border-color: #6b7280;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }

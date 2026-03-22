@@ -123,6 +123,8 @@ async function loadFeed() {
     noteBar.classList.add('hidden');
   }
 
+  updateRecordButton();
+
   if (!currentSessionId) return;
 
   const sid = currentSessionId;
@@ -141,6 +143,33 @@ async function loadFeed() {
     feed.scrollTop = feed.scrollHeight;
     knownEventCount = events.length;
     applyFilter();
+  }
+}
+
+// Toggle recording
+$('#btn-record').addEventListener('click', async () => {
+  const btn = $('#btn-record');
+  btn.disabled = true;
+  if (activeSessionId) {
+    await send({ type: 'session:stop' });
+  } else {
+    await send({ type: 'session:start' });
+  }
+  knownEventCount = -1;
+  loadFeed();
+  btn.disabled = false;
+});
+
+function updateRecordButton() {
+  const btn = $('#btn-record');
+  if (activeSessionId) {
+    btn.textContent = 'Stop';
+    btn.title = 'Stop recording';
+    btn.classList.add('recording');
+  } else {
+    btn.textContent = 'Record';
+    btn.title = 'Start recording';
+    btn.classList.remove('recording');
   }
 }
 
