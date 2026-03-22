@@ -803,6 +803,11 @@ async function loadSessionState() {
       viewingHistorical = false;
       knownEventCount = 0;
       $('#feed').innerHTML = '';
+      // Auto-enable auto-scroll when new recording starts
+      autoScroll = true;
+      const scrollBtn = $('#btn-autoscroll');
+      scrollBtn.textContent = 'Auto ↓';
+      scrollBtn.classList.remove('paused');
     }
     if (onFeedTab) noteBar.classList.remove('hidden');
   } else if (state.session) {
