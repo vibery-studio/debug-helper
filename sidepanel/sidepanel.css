@@ -87,6 +87,22 @@ header h1 { font-size: 14px; }
   border-color: var(--primary);
 }
 
+.scroll-btn {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: none;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.scroll-btn.paused {
+  background: #fef3c7;
+  border-color: #f59e0b;
+  color: #92400e;
+}
+
 .note-bar {
   display: flex;
   gap: 6px;

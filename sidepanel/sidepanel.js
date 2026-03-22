@@ -2,6 +2,8 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
 let activeFilter = 'all';
+let autoScroll = true; // auto-scroll feed to bottom
+let cachedScreenshots = []; // shared screenshot cache for feed thumbnails
 let currentSessionId = null;   // the session being viewed (from history or active)
 let activeSessionId = null;    // the currently recording session (set by service worker)
 let viewingHistorical = false; // true when viewing a past session from history
@@ -36,6 +38,18 @@ $$('.filter-btn').forEach(btn => {
     activeFilter = btn.dataset.filter;
     applyFilter();
   });
+});
+
+// Auto-scroll pause toggle
+$('#btn-autoscroll').addEventListener('click', () => {
+  autoScroll = !autoScroll;
+  const btn = $('#btn-autoscroll');
+  btn.textContent = autoScroll ? 'Auto ↓' : 'Paused';
+  btn.classList.toggle('paused', !autoScroll);
+  if (autoScroll) {
+    const feed = $('#feed');
+    feed.scrollTop = feed.scrollHeight;
+  }
 });
 
 function applyFilter() {
@@ -85,32 +99,38 @@ function renderEvent(ev) {
   const time = t.toLocaleTimeString() + '.' + String(t.getMilliseconds()).padStart(3, '0');
   div.innerHTML = `<span class="time">${time}</span> <span class="badge ${badgeClass(ev.type)}">${ev.type.split(':').pop()}</span><div class="detail">${eventLabel(ev)}</div>`;
 
-  // Load thumbnail for screenshot events
+  // Show thumbnail for screenshot events using cached data
   if (ev.type === 'event:screenshot' && ev.screenshotId) {
-    const thumb = document.createElement('img');
-    thumb.className = 'feed-screenshot-thumb';
-    thumb.title = 'Click to open annotator';
-    thumb.addEventListener('click', () => {
-      chrome.windows.create({
-        url: chrome.runtime.getURL(`annotator/annotator.html?id=${ev.screenshotId}`),
-        type: 'popup', width: 900, height: 700
+    const s = cachedScreenshots.find(sc => sc.id === ev.screenshotId);
+    if (s) {
+      const thumb = document.createElement('img');
+      thumb.className = 'feed-screenshot-thumb';
+      thumb.dataset.screenshotId = ev.screenshotId;
+      thumb.title = 'Click to open annotator';
+      thumb.src = s.annotatedDataUrl || s.dataUrl;
+      thumb.addEventListener('click', () => {
+        chrome.windows.create({
+          url: chrome.runtime.getURL(`annotator/annotator.html?id=${ev.screenshotId}`),
+          type: 'popup', width: 900, height: 700
+        });
       });
-    });
-    // Load image data async
-    send({ type: 'screenshot:list', sessionId: currentSessionId }).then(screenshots => {
-      const s = screenshots.find(sc => sc.id === ev.screenshotId);
-      if (s) thumb.src = s.annotatedDataUrl || s.dataUrl;
-    });
-    div.appendChild(thumb);
+      div.appendChild(thumb);
+    }
   }
 
   return div;
 }
 
 async function loadFeed() {
-  const state = await send({ type: 'session:get' });
+  let state;
+  try {
+    state = await send({ type: 'session:get' });
+  } catch { return; } // service worker unavailable
   const statusEl = $('#status');
   const noteBar = $('#note-bar');
+
+  // Check which tab is active — only show note-bar on feed tab
+  const onFeedTab = document.querySelector('.tab[data-tab="feed"]')?.classList.contains('active');
 
   if (state.recording) {
     statusEl.textContent = 'Recording';
@@ -118,7 +138,7 @@ async function loadFeed() {
     activeSessionId = state.session.id;
     currentSessionId = state.session.id;
     viewingHistorical = false;
-    noteBar.classList.remove('hidden');
+    if (onFeedTab) noteBar.classList.remove('hidden');
   } else if (state.session) {
     noteBar.classList.add('hidden');
     // Session exists (either just stopped or from lastSessionId)
@@ -158,13 +178,30 @@ async function loadFeed() {
     }
   }
 
+  // Always refresh screenshot cache to pick up annotation edits
+  try {
+    cachedScreenshots = await send({ type: 'screenshot:list', sessionId: sid }) || [];
+  } catch { cachedScreenshots = []; }
+
   if (events.length !== knownEventCount) {
+    events.sort((a, b) => a.timestamp - b.timestamp);
     const feed = $('#feed');
     feed.innerHTML = '';
     events.forEach(ev => feed.appendChild(renderEvent(ev)));
-    feed.scrollTop = feed.scrollHeight;
+    if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
     knownEventCount = events.length;
     applyFilter();
+    renderGallery(cachedScreenshots);
+  } else {
+    // Update existing feed thumbnails with latest screenshot data (e.g. after annotation)
+    $$('.feed-screenshot-thumb').forEach(thumb => {
+      const s = cachedScreenshots.find(sc => sc.id === thumb.dataset.screenshotId);
+      if (s) {
+        const newSrc = s.annotatedDataUrl || s.dataUrl;
+        if (thumb.src !== newSrc) thumb.src = newSrc;
+      }
+    });
+    renderGallery(cachedScreenshots);
   }
 }
 
@@ -172,14 +209,19 @@ async function loadFeed() {
 $('#btn-record').addEventListener('click', async () => {
   const btn = $('#btn-record');
   btn.disabled = true;
-  if (activeSessionId) {
-    await send({ type: 'session:stop' });
-  } else {
-    await send({ type: 'session:start' });
+  try {
+    if (activeSessionId) {
+      await send({ type: 'session:stop' });
+    } else {
+      await send({ type: 'session:start' });
+    }
+    knownEventCount = -1;
+    loadFeed();
+  } catch (err) {
+    console.error('[Debug Helper] Record toggle failed:', err);
+  } finally {
+    btn.disabled = false;
   }
-  knownEventCount = -1;
-  loadFeed();
-  btn.disabled = false;
 });
 
 function updateRecordButton() {
@@ -216,23 +258,47 @@ $('#btn-feed-capture').addEventListener('click', async () => {
   const btn = $('#btn-feed-capture');
   btn.disabled = true;
   btn.textContent = '...';
-  await send({ type: 'screenshot:capture' });
-  knownEventCount = -1;
-  loadFeed();
-  loadScreenshots();
-  btn.textContent = '📸';
-  btn.disabled = false;
+  try {
+    const result = await send({ type: 'screenshot:capture' });
+    if (result?.error) {
+      btn.textContent = 'Failed';
+      setTimeout(() => { btn.textContent = 'Capture'; }, 1500);
+      return;
+    }
+    knownEventCount = -1;
+    loadFeed();
+    btn.textContent = 'Capture';
+  } catch {
+    btn.textContent = 'Failed';
+    setTimeout(() => { btn.textContent = 'Capture'; }, 1500);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 // Screenshots
 $('#btn-capture').addEventListener('click', async () => {
-  await send({ type: 'screenshot:capture' });
-  loadScreenshots();
+  const btn = $('#btn-capture');
+  btn.disabled = true;
+  try {
+    const result = await send({ type: 'screenshot:capture' });
+    if (result?.error) {
+      btn.textContent = 'Failed';
+      setTimeout(() => { btn.textContent = 'Capture Screenshot'; }, 1500);
+      return;
+    }
+    knownEventCount = -1;
+    loadFeed();
+  } catch (err) {
+    btn.textContent = 'Failed';
+    setTimeout(() => { btn.textContent = 'Capture Screenshot'; }, 1500);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
-async function loadScreenshots() {
-  if (!currentSessionId) return;
-  const screenshots = await send({ type: 'screenshot:list', sessionId: currentSessionId });
+// Render gallery from screenshot array (shared by loadScreenshots and loadFeed)
+function renderGallery(screenshots) {
   const gallery = $('#gallery');
   gallery.innerHTML = '';
   screenshots.forEach(s => {
@@ -240,16 +306,19 @@ async function loadScreenshots() {
     img.src = s.annotatedDataUrl || s.dataUrl;
     img.title = new Date(s.timestamp).toLocaleString();
     img.addEventListener('click', () => {
-      // Open annotator
       chrome.windows.create({
         url: chrome.runtime.getURL(`annotator/annotator.html?id=${s.id}`),
-        type: 'popup',
-        width: 900,
-        height: 700
+        type: 'popup', width: 900, height: 700
       });
     });
     gallery.appendChild(img);
   });
+}
+
+async function loadScreenshots() {
+  if (!currentSessionId) return;
+  cachedScreenshots = await send({ type: 'screenshot:list', sessionId: currentSessionId }) || [];
+  renderGallery(cachedScreenshots);
 }
 
 // View a specific session (from history click)
@@ -280,31 +349,22 @@ async function loadFeedForSession(sessionId) {
     }
   }
 
+  // Refresh screenshot cache before rendering
+  cachedScreenshots = await send({ type: 'screenshot:list', sessionId: sid }) || [];
+  events.sort((a, b) => a.timestamp - b.timestamp);
   const feed = $('#feed');
   feed.innerHTML = '';
   events.forEach(ev => feed.appendChild(renderEvent(ev)));
-  feed.scrollTop = feed.scrollHeight;
+  if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
   knownEventCount = events.length;
   applyFilter();
+  renderGallery(cachedScreenshots);
 }
 
 async function loadScreenshotsForSession(sessionId) {
   if (!sessionId) return;
-  const screenshots = await send({ type: 'screenshot:list', sessionId });
-  const gallery = $('#gallery');
-  gallery.innerHTML = '';
-  screenshots.forEach(s => {
-    const img = document.createElement('img');
-    img.src = s.annotatedDataUrl || s.dataUrl;
-    img.title = new Date(s.timestamp).toLocaleString();
-    img.addEventListener('click', () => {
-      chrome.windows.create({
-        url: chrome.runtime.getURL(`annotator/annotator.html?id=${s.id}`),
-        type: 'popup', width: 900, height: 700
-      });
-    });
-    gallery.appendChild(img);
-  });
+  cachedScreenshots = await send({ type: 'screenshot:list', sessionId }) || [];
+  renderGallery(cachedScreenshots);
 }
 
 // History
