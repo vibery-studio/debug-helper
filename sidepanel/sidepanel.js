@@ -19,6 +19,11 @@ $$('.tab').forEach(tab => {
     tab.classList.add('active');
     $(`#tab-${tab.dataset.tab}`).classList.add('active');
     $('#filters').classList.toggle('hidden', tab.dataset.tab !== 'feed');
+    if (tab.dataset.tab !== 'feed') {
+      $('#note-bar').classList.add('hidden');
+    } else if (activeSessionId) {
+      $('#note-bar').classList.remove('hidden');
+    }
     if (tab.dataset.tab === 'history') loadHistory();
   });
 });
