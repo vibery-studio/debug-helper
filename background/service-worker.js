@@ -31,6 +31,7 @@ const SW = {
   eventBuffer: [],
   FLUSH_INTERVAL: 2000,
   FLUSH_SIZE: 50,
+  _flushTimer: null,
   KEEPALIVE_NAME: 'debug-helper-keepalive',
 
   async init() {
@@ -66,6 +67,7 @@ const SW = {
       case 'session:clear': return this.clearSession(msg.sessionId);
       case 'session:update': return this.updateSession(msg.sessionId, msg.updates);
       case 'session:list': return Storage.listSessions();
+      case 'session:flush': return this.flushBuffer();
       case 'screenshot:capture': return this.captureScreenshot(msg.tabId);
       case 'screenshot:save': return this.saveAnnotatedScreenshot(msg);
       case 'screenshot:list': return this.listScreenshots(msg.sessionId);
@@ -198,6 +200,10 @@ const SW = {
 
     if (this.eventBuffer.length >= this.FLUSH_SIZE) {
       await this.flushBuffer();
+    } else {
+      // Debounced flush — write to storage 500ms after last event for snappy UI
+      clearTimeout(this._flushTimer);
+      this._flushTimer = setTimeout(() => this.flushBuffer(), 500);
     }
     return { buffered: true };
   },

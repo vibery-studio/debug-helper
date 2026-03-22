@@ -365,8 +365,8 @@ async function addNote() {
   if (!text) return;
   input.value = '';
   await send({ type: 'event:note', content: text, timestamp: Date.now() });
-  knownEventCount = -1; // force refresh
-  loadFeed();
+  // Flush buffer immediately so the note appears in storage right away
+  await send({ type: 'session:flush' });
 }
 
 $('#btn-add-note').addEventListener('click', addNote);
@@ -768,21 +768,26 @@ chrome.storage.onChanged.addListener((changes) => {
         const added = newEvents.slice(oldEvents.length);
         if (added.length > 0) {
           const feed = $('#feed');
+          let hasScreenshot = false;
           added.forEach(ev => {
             feed.appendChild(renderEvent(ev));
             knownEventCount++;
+            if (ev.type === 'event:screenshot') hasScreenshot = true;
           });
           applyFilter();
           if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
+          // Refresh gallery when new screenshot events arrive
+          if (hasScreenshot) loadScreenshots();
         }
       }
     }
   }
 
-  // Refresh session state (recording status, screenshots)
+  // Refresh session state on session changes
   if (Object.keys(changes).some(k => k.startsWith('session:') || k === 'currentSessionId')) {
     loadSessionState();
     loadHistory();
+    loadScreenshots();
   }
 });
 
@@ -845,8 +850,3 @@ async function loadSessionState() {
   }
   loadHistory();
 })();
-// Lightweight poll for screenshots and session state only
-setInterval(() => {
-  loadSessionState();
-  loadScreenshots();
-}, 5000);
