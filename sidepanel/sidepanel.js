@@ -55,7 +55,12 @@ $('#btn-autoscroll').addEventListener('click', () => {
 function applyFilter() {
   $$('.event-item').forEach(el => {
     if (activeFilter === 'all') { el.classList.remove('hidden'); return; }
-    el.classList.toggle('hidden', el.dataset.type !== activeFilter);
+    if (activeFilter === 'media') {
+      // Media filter: show screenshots and video notes
+      el.classList.toggle('hidden', el.dataset.type !== 'event:screenshot' && el.dataset.type !== 'event:video');
+    } else {
+      el.classList.toggle('hidden', el.dataset.type !== activeFilter);
+    }
   });
 }
 
@@ -65,6 +70,7 @@ function badgeClass(type) {
   if (type.includes('network')) return 'badge-network';
   if (type === 'event:note') return 'badge-note';
   if (type === 'event:screenshot') return 'badge-info';
+  if (type === 'event:video') return 'badge-info';
   return 'badge-info';
 }
 
@@ -82,6 +88,7 @@ function eventLabel(ev) {
   if (ev.type.includes('network')) return `<strong>${ev.method}</strong> ${escHtml(ev.url).slice(0, 100)} → <span class="${ev.status >= 400 ? 'badge-error' : ''}">${ev.status}</span> (${ev.duration}ms)`;
   if (ev.type === 'event:note') return `<strong>📝</strong> ${escHtml(ev.content)}`;
   if (ev.type === 'event:screenshot') return `<strong>📸</strong> Screenshot captured`;
+  if (ev.type === 'event:video') return `<strong>🎥</strong> ${escHtml(ev.content)}`;
   return JSON.stringify(ev).slice(0, 200);
 }
 
@@ -167,6 +174,8 @@ function buildEventDetails(ev) {
     container.appendChild(renderBodyBlock('Response Body', ev.responseBody));
   } else if (ev.type === 'event:note') {
     addRow(`<b>Note:</b> ${escHtml(ev.content)}`);
+  } else if (ev.type === 'event:video') {
+    addRow(`<b>Video:</b> ${escHtml(ev.content)}`);
   }
   addRow(`<b>Time:</b> ${new Date(ev.timestamp).toLocaleString()}`);
   return container;
@@ -174,7 +183,7 @@ function buildEventDetails(ev) {
 
 function renderEvent(ev) {
   const div = document.createElement('div');
-  div.className = 'event-item' + (ev.type === 'event:note' ? ' note-event' : '') + (ev.type === 'event:screenshot' ? ' screenshot-event' : '');
+  div.className = 'event-item' + (ev.type === 'event:note' ? ' note-event' : '') + (ev.type === 'event:screenshot' ? ' screenshot-event' : '') + (ev.type === 'event:video' ? ' video-event' : '');
   div.dataset.type = ev.type;
   const t = new Date(ev.timestamp);
   const time = t.toLocaleTimeString() + '.' + String(t.getMilliseconds()).padStart(3, '0');
@@ -229,6 +238,21 @@ function renderEvent(ev) {
         });
       });
       div.appendChild(thumb);
+    }
+  }
+
+  // Show video preview for video events
+  if (ev.type === 'event:video' && ev.videoId) {
+    const v = cachedScreenshots.find(sc => sc.id === ev.videoId);
+    if (v && v.videoBlob) {
+      const video = document.createElement('video');
+      video.className = 'feed-video-thumb';
+      video.src = URL.createObjectURL(v.videoBlob);
+      video.controls = true;
+      video.preload = 'metadata';
+      video.title = 'Click to play';
+      video.addEventListener('click', (e) => e.stopPropagation());
+      div.appendChild(video);
     }
   }
 
@@ -332,6 +356,8 @@ $('#btn-record').addEventListener('click', async () => {
   btn.disabled = true;
   try {
     if (activeSessionId) {
+      // Stop video recording if active — wait for save to complete before ending session
+      if (videoRecorder && videoRecorder.state === 'recording') await stopVideoRecording();
       await send({ type: 'session:stop' });
     } else {
       await send({ type: 'session:start' });
@@ -370,6 +396,10 @@ async function addNote() {
 }
 
 $('#btn-add-note').addEventListener('click', addNote);
+$('#btn-add-note').disabled = true;
+$('#note-input').addEventListener('input', () => {
+  $('#btn-add-note').disabled = !$('#note-input').value.trim();
+});
 $('#note-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') addNote();
 });
@@ -397,48 +427,232 @@ $('#btn-feed-capture').addEventListener('click', async () => {
   }
 });
 
-// Screenshots
-$('#btn-capture').addEventListener('click', async () => {
-  const btn = $('#btn-capture');
-  btn.disabled = true;
+// Video recording
+let videoRecorder = null;
+let videoChunks = [];
+let videoStream = null;
+let videoSessionId = null; // capture session ID at recording start
+
+async function startVideoRecording() {
+  const btn = $('#btn-video');
+  if (!activeSessionId) {
+    btn.textContent = 'Record first';
+    setTimeout(() => { btn.textContent = 'Video'; }, 1500);
+    return;
+  }
   try {
-    const result = await send({ type: 'screenshot:capture' });
+    const result = await send({ type: 'video:streamId' });
     if (result?.error) {
       btn.textContent = 'Failed';
-      setTimeout(() => { btn.textContent = 'Capture Screenshot'; }, 1500);
+      setTimeout(() => { btn.textContent = 'Video'; }, 1500);
       return;
     }
-    knownEventCount = -1;
-    loadFeed();
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: result.streamId,
+        }
+      }
+    });
+    videoChunks = [];
+    videoSessionId = currentSessionId;
+    videoRecorder = new MediaRecorder(videoStream, { mimeType: 'video/webm;codecs=vp9' });
+    videoRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) videoChunks.push(e.data);
+    };
+    videoRecorder.onstop = async () => {
+      const blob = new Blob(videoChunks, { type: 'video/webm' });
+      videoChunks = [];
+      const videoId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      // Save video blob directly to IndexedDB from sidepanel
+      try {
+        const db = await new Promise((resolve, reject) => {
+          const req = indexedDB.open('debug-helper', 1);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction('screenshots', 'readwrite');
+          tx.objectStore('screenshots').put({
+            id: videoId,
+            sessionId: videoSessionId,
+            mediaType: 'video',
+            videoBlob: blob,
+            timestamp: Date.now()
+          });
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch (err) {
+        console.error('[Debug Helper] Failed to save video:', err);
+      }
+      // Refresh cache BEFORE writing event so renderEvent can find the video blob
+      const sid = videoSessionId;
+      if (sid) {
+        cachedScreenshots = await getMediaFromDB(sid);
+        renderGallery(cachedScreenshots);
+
+        const videoEvent = {
+          type: 'event:video',
+          content: `Video recorded (${(blob.size / 1024 / 1024).toFixed(1)} MB)`,
+          videoId,
+          timestamp: Date.now(),
+          _sessionId: sid
+        };
+        // Write directly to chrome.storage (session may already be stopped, buffer won't work)
+        const all = await chrome.storage.local.get(null);
+        let lastChunk = 0;
+        for (const k in all) {
+          if (k.startsWith('events:' + sid + ':')) {
+            const idx = parseInt(k.split(':')[2], 10);
+            if (idx > lastChunk) lastChunk = idx;
+          }
+        }
+        const chunkKey = `events:${sid}:${lastChunk}`;
+        const existing = all[chunkKey] || [];
+        existing.push(videoEvent);
+        await chrome.storage.local.set({ [chunkKey]: existing });
+      }
+    };
+    videoRecorder.start(1000); // collect in 1s chunks
+    btn.textContent = 'Stop';
+    btn.classList.add('recording-video');
   } catch (err) {
+    console.error('[Debug Helper] Video recording failed:', err);
     btn.textContent = 'Failed';
-    setTimeout(() => { btn.textContent = 'Capture Screenshot'; }, 1500);
-  } finally {
-    btn.disabled = false;
+    setTimeout(() => { btn.textContent = 'Video'; }, 1500);
+  }
+}
+
+// Returns a promise that resolves after onstop handler completes
+function stopVideoRecording() {
+  const btn = $('#btn-video');
+  btn.textContent = 'Saving...';
+  btn.classList.remove('recording-video');
+  return new Promise((resolve) => {
+    if (videoRecorder && videoRecorder.state !== 'inactive') {
+      const origOnStop = videoRecorder.onstop;
+      videoRecorder.onstop = async (e) => {
+        // Run original handler first (saves blob + event)
+        if (origOnStop) await origOnStop(e);
+        // Clean up stream and recorder AFTER save completes
+        if (videoStream) {
+          videoStream.getTracks().forEach(t => t.stop());
+          videoStream = null;
+        }
+        videoRecorder = null;
+        btn.textContent = 'Video';
+        resolve();
+      };
+      videoRecorder.stop();
+    } else {
+      if (videoStream) {
+        videoStream.getTracks().forEach(t => t.stop());
+        videoStream = null;
+      }
+      videoRecorder = null;
+      btn.textContent = 'Video';
+      resolve();
+    }
+  });
+}
+
+$('#btn-video').addEventListener('click', () => {
+  if (videoRecorder && videoRecorder.state === 'recording') {
+    stopVideoRecording();
+  } else {
+    startVideoRecording();
   }
 });
 
-// Render gallery from screenshot array (shared by loadScreenshots and loadFeed)
-function renderGallery(screenshots) {
+// Render gallery from media array (screenshots + videos)
+function renderGallery(mediaItems) {
   const gallery = $('#gallery');
   gallery.innerHTML = '';
-  screenshots.forEach(s => {
-    const img = document.createElement('img');
-    img.src = s.annotatedDataUrl || s.dataUrl;
-    img.title = new Date(s.timestamp).toLocaleString();
-    img.addEventListener('click', () => {
-      chrome.windows.create({
-        url: chrome.runtime.getURL(`annotator/annotator.html?id=${s.id}`),
-        type: 'popup', width: 900, height: 700
+  mediaItems.forEach(s => {
+    if (s.mediaType === 'video' && s.videoBlob) {
+      // Video item
+      const wrapper = document.createElement('div');
+      wrapper.className = 'gallery-video';
+      const video = document.createElement('video');
+      video.src = URL.createObjectURL(s.videoBlob);
+      video.controls = true;
+      video.preload = 'metadata';
+      video.title = new Date(s.timestamp).toLocaleString();
+      // Action buttons
+      const actions = document.createElement('div');
+      actions.className = 'gallery-video-actions';
+      // Open in popup
+      const openBtn = document.createElement('button');
+      openBtn.className = 'btn btn-sm btn-primary';
+      openBtn.textContent = 'Open';
+      openBtn.addEventListener('click', () => {
+        const blobUrl = URL.createObjectURL(s.videoBlob);
+        const w = window.open('', '_blank', 'width=900,height=700');
+        w.document.title = 'Debug Helper - Video';
+        w.document.body.style.cssText = 'margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh';
+        const v = w.document.createElement('video');
+        v.src = blobUrl;
+        v.controls = true;
+        v.autoplay = true;
+        v.style.maxWidth = '100%';
+        v.style.maxHeight = '100%';
+        w.document.body.appendChild(v);
       });
-    });
-    gallery.appendChild(img);
+      // Download
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'btn btn-sm';
+      dlBtn.textContent = 'Download';
+      dlBtn.addEventListener('click', () => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(s.videoBlob);
+        const ts = new Date(s.timestamp).toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.download = `debug-video-${ts}.webm`;
+        a.click();
+      });
+      actions.appendChild(openBtn);
+      actions.appendChild(dlBtn);
+      wrapper.appendChild(video);
+      wrapper.appendChild(actions);
+      gallery.appendChild(wrapper);
+    } else {
+      // Screenshot item
+      const img = document.createElement('img');
+      img.src = s.annotatedDataUrl || s.dataUrl;
+      img.title = new Date(s.timestamp).toLocaleString();
+      img.addEventListener('click', () => {
+        chrome.windows.create({
+          url: chrome.runtime.getURL(`annotator/annotator.html?id=${s.id}`),
+          type: 'popup', width: 900, height: 700
+        });
+      });
+      gallery.appendChild(img);
+    }
+  });
+}
+
+// Read media directly from IndexedDB (blobs can't survive chrome.runtime.sendMessage)
+async function getMediaFromDB(sessionId) {
+  const db = await new Promise((resolve, reject) => {
+    const req = indexedDB.open('debug-helper', 1);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('screenshots', 'readonly');
+    const req = tx.objectStore('screenshots').getAll();
+    req.onsuccess = () => {
+      resolve(req.result.filter(s => s.sessionId === sessionId).sort((a, b) => a.timestamp - b.timestamp));
+    };
+    req.onerror = () => reject(req.error);
   });
 }
 
 async function loadScreenshots() {
   if (!currentSessionId) return;
-  cachedScreenshots = await send({ type: 'screenshot:list', sessionId: currentSessionId }) || [];
+  cachedScreenshots = await getMediaFromDB(currentSessionId);
   renderGallery(cachedScreenshots);
 }
 
@@ -470,8 +684,8 @@ async function loadFeedForSession(sessionId) {
     }
   }
 
-  // Refresh screenshot cache before rendering
-  cachedScreenshots = await send({ type: 'screenshot:list', sessionId: sid }) || [];
+  // Refresh media cache before rendering (read directly from IndexedDB to preserve blobs)
+  cachedScreenshots = await getMediaFromDB(sid);
   events.sort((a, b) => a.timestamp - b.timestamp);
   const feed = $('#feed');
   feed.innerHTML = '';
@@ -484,7 +698,7 @@ async function loadFeedForSession(sessionId) {
 
 async function loadScreenshotsForSession(sessionId) {
   if (!sessionId) return;
-  cachedScreenshots = await send({ type: 'screenshot:list', sessionId }) || [];
+  cachedScreenshots = await getMediaFromDB(sessionId);
   renderGallery(cachedScreenshots);
 }
 
@@ -635,7 +849,10 @@ async function generatePreview(format) {
     } else {
       // Strip internal fields from preview/copy
       const clean = JSON.parse(JSON.stringify(result));
-      if (clean.debugReport) delete clean.debugReport._screenshotFiles;
+      if (clean.debugReport) {
+        delete clean.debugReport._screenshotFiles;
+        delete clean.debugReport._videoFiles;
+      }
       lastExportText = JSON.stringify(clean, null, 2);
       lastExportFormat = 'json';
     }
@@ -769,11 +986,11 @@ chrome.storage.onChanged.addListener((changes) => {
           added.forEach(ev => {
             feed.appendChild(renderEvent(ev));
             knownEventCount++;
-            if (ev.type === 'event:screenshot') hasScreenshot = true;
+            if (ev.type === 'event:screenshot' || ev.type === 'event:video') hasScreenshot = true;
           });
           applyFilter();
           if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
-          // Refresh gallery when new screenshot events arrive
+          // Refresh gallery when new media events arrive
           if (hasScreenshot) loadScreenshots();
         }
       }

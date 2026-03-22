@@ -69,6 +69,7 @@ const SW = {
       case 'session:list': return Storage.listSessions();
       case 'session:flush': return this.flushBuffer();
       case 'screenshot:capture': return this.captureScreenshot(msg.tabId);
+      case 'video:streamId': return this.getTabStreamId(msg.tabId);
       case 'screenshot:save': return this.saveAnnotatedScreenshot(msg);
       case 'screenshot:list': return this.listScreenshots(msg.sessionId);
       case 'storage:usage': return Storage.getStorageUsage();
@@ -81,6 +82,7 @@ const SW = {
       case 'event:network':
       case 'event:network:enhanced':
       case 'event:note':
+      case 'event:video':
         return this.bufferEvent(msg);
       default:
         return { error: 'Unknown message type: ' + msg.type };
@@ -260,6 +262,21 @@ const SW = {
     });
   },
 
+  async getTabStreamId(tabId) {
+    const session = await Storage.getCurrentSession();
+    const tid = tabId || session?.tabId;
+    if (!tid) return { error: 'No active tab' };
+    return new Promise((resolve) => {
+      chrome.tabCapture.getMediaStreamId({ targetTabId: tid }, (streamId) => {
+        if (chrome.runtime.lastError) {
+          resolve({ error: chrome.runtime.lastError.message });
+        } else {
+          resolve({ streamId });
+        }
+      });
+    });
+  },
+
   async listScreenshots(sessionId) {
     const sid = sessionId || (await Storage.getCurrentSession())?.id;
     if (!sid) return [];
@@ -293,8 +310,18 @@ const SW = {
       entries.push({ name: sf.filename, data: new Uint8Array(buf) });
     }
 
-    // Remove internal field before serializing
+    // Video files
+    const videoFiles = data.debugReport._videoFiles || [];
+    for (const vf of videoFiles) {
+      if (vf.blob) {
+        const buf = await vf.blob.arrayBuffer();
+        entries.push({ name: vf.filename, data: new Uint8Array(buf) });
+      }
+    }
+
+    // Remove internal fields before serializing
     delete data.debugReport._screenshotFiles;
+    delete data.debugReport._videoFiles;
 
     // Report file
     if (format === 'markdown') {
@@ -325,6 +352,7 @@ const SW = {
       // Remove internal _screenshotFiles before encoding
       const report = { ...data.debugReport };
       delete report._screenshotFiles;
+      delete report._videoFiles;
       return { toon: Toon.encode({ debugReport: report }) };
     }
     return { markdown: await Export.generateMarkdown(sessionId, filters) };
