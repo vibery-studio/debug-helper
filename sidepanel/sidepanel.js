@@ -50,6 +50,7 @@ function badgeClass(type) {
   if (type === 'event:console') return 'badge-warn';
   if (type.includes('network')) return 'badge-network';
   if (type === 'event:note') return 'badge-note';
+  if (type === 'event:screenshot') return 'badge-info';
   return 'badge-info';
 }
 
@@ -66,6 +67,7 @@ function eventLabel(ev) {
   if (ev.type === 'event:console') return `<span class="badge ${ev.level === 'error' ? 'badge-error' : 'badge-warn'}">${ev.level}</span> ${escHtml(ev.message).slice(0, 200)}`;
   if (ev.type.includes('network')) return `<strong>${ev.method}</strong> ${escHtml(ev.url).slice(0, 100)} → <span class="${ev.status >= 400 ? 'badge-error' : ''}">${ev.status}</span> (${ev.duration}ms)`;
   if (ev.type === 'event:note') return `<strong>📝</strong> ${escHtml(ev.content)}`;
+  if (ev.type === 'event:screenshot') return `<strong>📸</strong> Screenshot captured`;
   return JSON.stringify(ev).slice(0, 200);
 }
 
@@ -77,11 +79,31 @@ function escHtml(s) {
 
 function renderEvent(ev) {
   const div = document.createElement('div');
-  div.className = 'event-item' + (ev.type === 'event:note' ? ' note-event' : '');
+  div.className = 'event-item' + (ev.type === 'event:note' ? ' note-event' : '') + (ev.type === 'event:screenshot' ? ' screenshot-event' : '');
   div.dataset.type = ev.type;
   const t = new Date(ev.timestamp);
   const time = t.toLocaleTimeString() + '.' + String(t.getMilliseconds()).padStart(3, '0');
   div.innerHTML = `<span class="time">${time}</span> <span class="badge ${badgeClass(ev.type)}">${ev.type.split(':').pop()}</span><div class="detail">${eventLabel(ev)}</div>`;
+
+  // Load thumbnail for screenshot events
+  if (ev.type === 'event:screenshot' && ev.screenshotId) {
+    const thumb = document.createElement('img');
+    thumb.className = 'feed-screenshot-thumb';
+    thumb.title = 'Click to open annotator';
+    thumb.addEventListener('click', () => {
+      chrome.windows.create({
+        url: chrome.runtime.getURL(`annotator/annotator.html?id=${ev.screenshotId}`),
+        type: 'popup', width: 900, height: 700
+      });
+    });
+    // Load image data async
+    send({ type: 'screenshot:list', sessionId: currentSessionId }).then(screenshots => {
+      const s = screenshots.find(sc => sc.id === ev.screenshotId);
+      if (s) thumb.src = s.annotatedDataUrl || s.dataUrl;
+    });
+    div.appendChild(thumb);
+  }
+
   return div;
 }
 
@@ -187,6 +209,19 @@ async function addNote() {
 $('#btn-add-note').addEventListener('click', addNote);
 $('#note-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') addNote();
+});
+
+// Feed capture screenshot button
+$('#btn-feed-capture').addEventListener('click', async () => {
+  const btn = $('#btn-feed-capture');
+  btn.disabled = true;
+  btn.textContent = '...';
+  await send({ type: 'screenshot:capture' });
+  knownEventCount = -1;
+  loadFeed();
+  loadScreenshots();
+  btn.textContent = '📸';
+  btn.disabled = false;
 });
 
 // Screenshots

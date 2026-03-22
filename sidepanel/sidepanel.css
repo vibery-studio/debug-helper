@@ -113,6 +113,25 @@ header h1 { font-size: 14px; }
   border-left: 3px solid #f59e0b;
 }
 
+.event-item.screenshot-event {
+  background: #eff6ff;
+  border-left: 3px solid #3b82f6;
+}
+
+.feed-screenshot-thumb {
+  display: block;
+  max-width: 180px;
+  margin-top: 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.feed-screenshot-thumb:hover {
+  opacity: 0.8;
+}
+
 .tab-content {
   display: none;
   flex: 1;
