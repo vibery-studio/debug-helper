@@ -173,10 +173,65 @@ header h1 { font-size: 14px; }
   font-family: monospace;
 }
 
+.event-item {
+  cursor: pointer;
+}
+
 .event-item .detail {
   font-family: monospace;
   font-size: 11px;
   word-break: break-all;
+}
+
+.event-item.expanded {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+
+.event-details {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.event-details.hidden {
+  display: none;
+}
+
+.event-details pre {
+  margin: 2px 0 4px;
+  padding: 4px 6px;
+  background: rgba(0,0,0,0.04);
+  border-radius: 3px;
+  font-size: 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.body-actions {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 4px;
+}
+
+.btn-body-toggle,
+.btn-body-copy {
+  padding: 1px 6px;
+  font-size: 9px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  cursor: pointer;
+}
+
+.btn-body-toggle:hover,
+.btn-body-copy:hover {
+  background: var(--border);
 }
 
 .gallery {

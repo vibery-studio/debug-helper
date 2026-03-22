@@ -91,6 +91,87 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+// Render a body block with pretty/copy buttons for JSON content
+function renderBodyBlock(label, body) {
+  if (!body) {
+    const empty = document.createElement('div');
+    empty.innerHTML = `<b>${label}:</b> <i>none</i>`;
+    return empty;
+  }
+
+  // Try to detect and pretty-print JSON
+  let prettyBody = null;
+  const trimmed = body.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try { prettyBody = JSON.stringify(JSON.parse(trimmed), null, 2); } catch {}
+  }
+
+  const container = document.createElement('div');
+  container.innerHTML = `<b>${label}:</b>`;
+
+  const actions = document.createElement('div');
+  actions.className = 'body-actions';
+
+  const pre = document.createElement('pre');
+  pre.textContent = (prettyBody || body).slice(0, 3000);
+
+  if (prettyBody) {
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'btn-body-toggle';
+    toggleBtn.textContent = 'Raw';
+    toggleBtn._raw = body.slice(0, 3000);
+    toggleBtn._pretty = prettyBody.slice(0, 3000);
+    toggleBtn._pre = pre;
+    actions.appendChild(toggleBtn);
+  }
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'btn-body-copy';
+  copyBtn.textContent = 'Copy';
+  copyBtn._pre = pre;
+  actions.appendChild(copyBtn);
+
+  container.appendChild(actions);
+  container.appendChild(pre);
+  return container;
+}
+
+// Build expanded detail DOM element for an event
+function buildEventDetails(ev) {
+  const container = document.createElement('div');
+
+  function addRow(html) {
+    const row = document.createElement('div');
+    row.innerHTML = html;
+    container.appendChild(row);
+  }
+
+  if (ev.type === 'event:dom') {
+    const ctx = ev.context || {};
+    addRow(`<b>Event:</b> ${escHtml(ev.eventType)}`);
+    addRow(`<b>Selector:</b> <code>${escHtml(ev.selector)}</code>`);
+    if (ctx.tag) addRow(`<b>Tag:</b> ${escHtml(ctx.tag)}`);
+    if (ctx.text) addRow(`<b>Text:</b> ${escHtml(ctx.text)}`);
+    if (ev.value) addRow(`<b>Value:</b> ${escHtml(ev.value)}`);
+    if (ctx.id) addRow(`<b>ID:</b> ${escHtml(ctx.id)}`);
+    if (ctx.className) addRow(`<b>Class:</b> ${escHtml(ctx.className)}`);
+  } else if (ev.type === 'event:console') {
+    addRow(`<b>Level:</b> ${escHtml(ev.level)}`);
+    addRow(`<b>Message:</b> ${escHtml(ev.message)}`);
+    if (ev.stack) addRow(`<b>Stack:</b><pre>${escHtml(ev.stack)}</pre>`);
+  } else if (ev.type.includes('network')) {
+    addRow(`<b>Method:</b> ${escHtml(ev.method)}`);
+    addRow(`<b>URL:</b> ${escHtml(ev.url)}`);
+    addRow(`<b>Status:</b> ${ev.status} · <b>Duration:</b> ${ev.duration}ms`);
+    container.appendChild(renderBodyBlock('Request Body', ev.requestBody));
+    container.appendChild(renderBodyBlock('Response Body', ev.responseBody));
+  } else if (ev.type === 'event:note') {
+    addRow(`<b>Note:</b> ${escHtml(ev.content)}`);
+  }
+  addRow(`<b>Time:</b> ${new Date(ev.timestamp).toLocaleString()}`);
+  return container;
+}
+
 function renderEvent(ev) {
   const div = document.createElement('div');
   div.className = 'event-item' + (ev.type === 'event:note' ? ' note-event' : '') + (ev.type === 'event:screenshot' ? ' screenshot-event' : '');
@@ -98,6 +179,38 @@ function renderEvent(ev) {
   const t = new Date(ev.timestamp);
   const time = t.toLocaleTimeString() + '.' + String(t.getMilliseconds()).padStart(3, '0');
   div.innerHTML = `<span class="time">${time}</span> <span class="badge ${badgeClass(ev.type)}">${ev.type.split(':').pop()}</span><div class="detail">${eventLabel(ev)}</div>`;
+
+  // Expandable details on click (skip for screenshots — thumbnail is already visible)
+  if (ev.type !== 'event:screenshot') {
+    const detailsDiv = document.createElement('div');
+    detailsDiv.className = 'event-details hidden';
+    detailsDiv.appendChild(buildEventDetails(ev));
+    div.appendChild(detailsDiv);
+
+    div.addEventListener('click', (e) => {
+      // Handle body action buttons
+      const toggleBtn = e.target.closest('.btn-body-toggle');
+      if (toggleBtn) {
+        e.stopPropagation();
+        const isRaw = toggleBtn.textContent === 'Raw';
+        toggleBtn._pre.textContent = isRaw ? toggleBtn._raw : toggleBtn._pretty;
+        toggleBtn.textContent = isRaw ? 'Pretty' : 'Raw';
+        return;
+      }
+      const copyBtn = e.target.closest('.btn-body-copy');
+      if (copyBtn) {
+        e.stopPropagation();
+        navigator.clipboard.writeText(copyBtn._pre.textContent).then(() => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1000);
+        });
+        return;
+      }
+      // Toggle expand
+      div.classList.toggle('expanded');
+      detailsDiv.classList.toggle('hidden');
+    });
+  }
 
   // Show thumbnail for screenshot events using cached data
   if (ev.type === 'event:screenshot' && ev.screenshotId) {
@@ -108,7 +221,8 @@ function renderEvent(ev) {
       thumb.dataset.screenshotId = ev.screenshotId;
       thumb.title = 'Click to open annotator';
       thumb.src = s.annotatedDataUrl || s.dataUrl;
-      thumb.addEventListener('click', () => {
+      thumb.addEventListener('click', (e) => {
+        e.stopPropagation();
         chrome.windows.create({
           url: chrome.runtime.getURL(`annotator/annotator.html?id=${ev.screenshotId}`),
           type: 'popup', width: 900, height: 700
@@ -186,8 +300,15 @@ async function loadFeed() {
   if (events.length !== knownEventCount) {
     events.sort((a, b) => a.timestamp - b.timestamp);
     const feed = $('#feed');
-    feed.innerHTML = '';
-    events.forEach(ev => feed.appendChild(renderEvent(ev)));
+    if (events.length > knownEventCount && knownEventCount > 0) {
+      // Append only new events to preserve expanded state
+      const newEvents = events.slice(knownEventCount);
+      newEvents.forEach(ev => feed.appendChild(renderEvent(ev)));
+    } else {
+      // Full re-render (first load, session switch, or events decreased)
+      feed.innerHTML = '';
+      events.forEach(ev => feed.appendChild(renderEvent(ev)));
+    }
     if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
     knownEventCount = events.length;
     applyFilter();
@@ -633,14 +754,79 @@ $('#btn-download').addEventListener('click', async () => {
   }
 });
 
-// Storage change listener for live updates
+// Event-driven feed updates via storage change listener
 chrome.storage.onChanged.addListener((changes) => {
-  loadFeed();
-  // Refresh history when a session is created or ended
+  const sid = currentSessionId;
+
+  // Append new events to feed reactively (no full re-render)
+  if (sid) {
+    for (const key of Object.keys(changes)) {
+      if (key.startsWith('events:' + sid + ':') && changes[key].newValue) {
+        const newEvents = changes[key].newValue;
+        // Only process events we haven't seen (compare with oldValue)
+        const oldEvents = changes[key].oldValue || [];
+        const added = newEvents.slice(oldEvents.length);
+        if (added.length > 0) {
+          const feed = $('#feed');
+          added.forEach(ev => {
+            feed.appendChild(renderEvent(ev));
+            knownEventCount++;
+          });
+          applyFilter();
+          if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
+        }
+      }
+    }
+  }
+
+  // Refresh session state (recording status, screenshots)
   if (Object.keys(changes).some(k => k.startsWith('session:') || k === 'currentSessionId')) {
+    loadSessionState();
     loadHistory();
   }
 });
+
+// Lightweight session state update (no feed re-render)
+async function loadSessionState() {
+  let state;
+  try { state = await send({ type: 'session:get' }); } catch { return; }
+  const statusEl = $('#status');
+  const noteBar = $('#note-bar');
+  const onFeedTab = document.querySelector('.tab[data-tab="feed"]')?.classList.contains('active');
+
+  if (state.recording) {
+    statusEl.textContent = 'Recording';
+    statusEl.className = 'status-badge recording';
+    activeSessionId = state.session.id;
+    if (currentSessionId !== state.session.id) {
+      currentSessionId = state.session.id;
+      viewingHistorical = false;
+      knownEventCount = 0;
+      $('#feed').innerHTML = '';
+    }
+    if (onFeedTab) noteBar.classList.remove('hidden');
+  } else if (state.session) {
+    noteBar.classList.add('hidden');
+    if (activeSessionId && activeSessionId === state.session.id && state.session.endTime) {
+      statusEl.textContent = 'Session ended';
+      statusEl.className = 'status-badge';
+      activeSessionId = null;
+      loadHistory();
+    } else if (!viewingHistorical) {
+      statusEl.textContent = state.session.endTime ? 'Last session' : 'Idle';
+      statusEl.className = 'status-badge';
+    } else {
+      statusEl.textContent = 'Viewing history';
+      statusEl.className = 'status-badge';
+    }
+  } else {
+    statusEl.textContent = viewingHistorical ? 'Viewing history' : 'Idle';
+    statusEl.className = 'status-badge';
+    activeSessionId = null;
+    noteBar.classList.add('hidden');
+  }
+  updateRecordButton();
+}
 
 // Initial load — check if popup requested a specific session
 (async () => {
@@ -654,7 +840,8 @@ chrome.storage.onChanged.addListener((changes) => {
   }
   loadHistory();
 })();
+// Lightweight poll for screenshots and session state only
 setInterval(() => {
-  loadFeed();
+  loadSessionState();
   loadScreenshots();
-}, 3000);
+}, 5000);

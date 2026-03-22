@@ -19,6 +19,7 @@ const Redact = {
     if (copy.message) copy.message = this.str(copy.message);
     if (copy.stack) copy.stack = this.str(copy.stack);
     if (copy.url) copy.url = this.str(copy.url);
+    if (copy.requestBody) copy.requestBody = this.str(copy.requestBody);
     if (copy.responseBody) copy.responseBody = this.str(copy.responseBody);
     if (copy.value) copy.value = this.str(copy.value);
     if (copy.content) copy.content = this.str(copy.content);
