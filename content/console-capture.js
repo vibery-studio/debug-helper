@@ -4,6 +4,15 @@
   if (window[PREFIX + 'consolePatched']) return;
   window[PREFIX + 'consolePatched'] = true;
 
+  let recording = false;
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    if (!e.data || e.data.source !== 'debug-helper-isolated') return;
+    if (e.data.type === 'recording:start') recording = true;
+    if (e.data.type === 'recording:stop') recording = false;
+  });
+
   const origConsole = {
     log: console.log.bind(console),
     warn: console.warn.bind(console),
@@ -22,6 +31,7 @@
   }
 
   function post(level, args, stack) {
+    if (!recording) return;
     window.postMessage({
       source: 'debug-helper-main',
       type: 'event:console',
