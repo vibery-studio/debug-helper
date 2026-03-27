@@ -4,9 +4,19 @@
   if (window[PREFIX + 'networkPatched']) return;
   window[PREFIX + 'networkPatched'] = true;
 
+  let recording = false;
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    if (!e.data || e.data.source !== 'debug-helper-isolated') return;
+    if (e.data.type === 'recording:start') recording = true;
+    if (e.data.type === 'recording:stop') recording = false;
+  });
+
   const MAX_BODY = 10240;
 
   function post(data) {
+    if (!recording) return;
     window.postMessage({
       source: 'debug-helper-main',
       type: 'event:network',

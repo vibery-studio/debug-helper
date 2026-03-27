@@ -330,10 +330,15 @@ const SW = {
 
   startKeepalive() {
     chrome.alarms.create(this.KEEPALIVE_NAME, { periodInMinutes: 0.4 });
+    this._flushInterval = setInterval(() => this.flushBuffer(), this.FLUSH_INTERVAL);
   },
 
   stopKeepalive() {
     chrome.alarms.clear(this.KEEPALIVE_NAME);
+    if (this._flushInterval) {
+      clearInterval(this._flushInterval);
+      this._flushInterval = null;
+    }
   }
 };
 
@@ -355,7 +360,6 @@ chrome.commands.onCommand.addListener(async (command) => {
 });
 
 SW.init();
-setInterval(() => SW.flushBuffer(), SW.FLUSH_INTERVAL);
 
 // --- Dev auto-reload (disabled in production builds) ---
 // To enable during development, set localStorage['debug-helper-dev'] = '1'

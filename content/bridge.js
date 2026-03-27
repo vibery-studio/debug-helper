@@ -1,8 +1,6 @@
 // ISOLATED world — relays postMessage from MAIN world to service worker
 (() => {
-  if (window.__debugHelperBridge) {
-    try { if (chrome.runtime?.id) return; } catch {}
-  }
+  if (window.__debugHelperBridge) return;
   window.__debugHelperBridge = true;
   window.addEventListener('message', (e) => {
     if (e.source !== window) return;

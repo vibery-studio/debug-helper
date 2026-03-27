@@ -169,6 +169,7 @@
   }
 
   function startRecording() {
+    window.postMessage({ source: 'debug-helper-isolated', type: 'recording:start' }, '*');
     recording = true;
     document.addEventListener('click', onClick, true);
     document.addEventListener('dblclick', onClick, true);
@@ -179,6 +180,7 @@
   }
 
   function stopRecording() {
+    window.postMessage({ source: 'debug-helper-isolated', type: 'recording:stop' }, '*');
     recording = false;
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('dblclick', onClick, true);
