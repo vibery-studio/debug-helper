@@ -189,8 +189,8 @@ function renderEvent(ev) {
   const time = t.toLocaleTimeString() + '.' + String(t.getMilliseconds()).padStart(3, '0');
   div.innerHTML = `<span class="time">${time}</span> <span class="badge ${badgeClass(ev.type)}">${ev.type.split(':').pop()}</span><div class="detail">${eventLabel(ev)}</div>`;
 
-  // Expandable details on click (skip for screenshots — thumbnail is already visible)
-  if (ev.type !== 'event:screenshot') {
+  // Expandable details on click (skip for screenshots/videos — thumbnail is already visible)
+  if (ev.type !== 'event:screenshot' && ev.type !== 'event:video') {
     const detailsDiv = document.createElement('div');
     detailsDiv.className = 'event-details hidden';
     detailsDiv.appendChild(buildEventDetails(ev));
@@ -241,17 +241,29 @@ function renderEvent(ev) {
     }
   }
 
-  // Show video preview for video events
+  // Show video thumbnail for video events — click opens in popup viewer
   if (ev.type === 'event:video' && ev.videoId) {
     const v = cachedScreenshots.find(sc => sc.id === ev.videoId);
     if (v && v.videoBlob) {
       const video = document.createElement('video');
       video.className = 'feed-video-thumb';
       video.src = URL.createObjectURL(v.videoBlob);
-      video.controls = true;
       video.preload = 'metadata';
-      video.title = 'Click to play';
-      video.addEventListener('click', (e) => e.stopPropagation());
+      video.title = 'Click to open video';
+      video.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const blobUrl = URL.createObjectURL(v.videoBlob);
+        const w = window.open('', '_blank', 'width=900,height=700');
+        w.document.title = 'Debug Helper - Video';
+        w.document.body.style.cssText = 'margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh';
+        const player = w.document.createElement('video');
+        player.src = blobUrl;
+        player.controls = true;
+        player.autoplay = true;
+        player.style.maxWidth = '100%';
+        player.style.maxHeight = '100%';
+        w.document.body.appendChild(player);
+      });
       div.appendChild(video);
     }
   }
