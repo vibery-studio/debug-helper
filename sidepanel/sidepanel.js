@@ -317,8 +317,9 @@ async function loadFeed() {
   }
 
   // Always refresh screenshot cache to pick up annotation edits
+  // Read directly from IndexedDB to preserve video blobs (can't survive message passing)
   try {
-    cachedScreenshots = await send({ type: 'screenshot:list', sessionId: sid }) || [];
+    cachedScreenshots = await getMediaFromDB(sid);
   } catch { cachedScreenshots = []; }
 
   if (events.length !== knownEventCount) {
@@ -501,19 +502,29 @@ async function startVideoRecording() {
           timestamp: Date.now(),
           _sessionId: sid
         };
-        // Write directly to chrome.storage (session may already be stopped, buffer won't work)
-        const all = await chrome.storage.local.get(null);
-        let lastChunk = 0;
-        for (const k in all) {
-          if (k.startsWith('events:' + sid + ':')) {
-            const idx = parseInt(k.split(':')[2], 10);
-            if (idx > lastChunk) lastChunk = idx;
+        // Try sending through service worker buffer first (avoids race with flushBuffer)
+        let buffered = false;
+        try {
+          const result = await send(videoEvent);
+          buffered = result && result.buffered;
+        } catch { /* service worker unavailable */ }
+        // Fallback: write directly if buffer didn't accept (session already stopped)
+        if (!buffered) {
+          const allKeys = await chrome.storage.local.get(null);
+          let lastChunk = 0;
+          for (const k in allKeys) {
+            if (k.startsWith('events:' + sid + ':')) {
+              const idx = parseInt(k.split(':')[2], 10);
+              if (idx > lastChunk) lastChunk = idx;
+            }
           }
+          const chunkKey = `events:${sid}:${lastChunk}`;
+          // Fresh read of just this chunk to minimize race window
+          const freshData = await chrome.storage.local.get(chunkKey);
+          const existing = freshData[chunkKey] || [];
+          existing.push(videoEvent);
+          await chrome.storage.local.set({ [chunkKey]: existing });
         }
-        const chunkKey = `events:${sid}:${lastChunk}`;
-        const existing = all[chunkKey] || [];
-        existing.push(videoEvent);
-        await chrome.storage.local.set({ [chunkKey]: existing });
       }
     };
     videoRecorder.start(1000); // collect in 1s chunks
