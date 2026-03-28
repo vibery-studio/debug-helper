@@ -192,6 +192,12 @@ header h1 { font-size: 14px; }
   margin-top: 6px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.feed-video-thumb:hover {
+  opacity: 0.8;
 }
 
 .tab-content {
