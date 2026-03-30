@@ -345,11 +345,17 @@ const SW = {
   },
 
   async exportSession(sessionId, format, filters) {
-    if (format === 'json') return Export.generateJSON(sessionId, filters);
+    if (format === 'json') {
+      const data = await Export.generateJSON(sessionId, filters);
+      if (!data) return null;
+      // Strip internal fields with Blob objects — they can't survive message passing
+      delete data.debugReport._screenshotFiles;
+      delete data.debugReport._videoFiles;
+      return data;
+    }
     if (format === 'toon') {
       const data = await Export.generateJSON(sessionId, filters);
       if (!data) return null;
-      // Remove internal _screenshotFiles before encoding
       const report = { ...data.debugReport };
       delete report._screenshotFiles;
       delete report._videoFiles;

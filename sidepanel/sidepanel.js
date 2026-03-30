@@ -481,11 +481,7 @@ async function startVideoRecording() {
       const videoId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       // Save video blob directly to IndexedDB from sidepanel
       try {
-        const db = await new Promise((resolve, reject) => {
-          const req = indexedDB.open('debug-helper', 1);
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => reject(req.error);
-        });
+        const db = await openMediaDB();
         await new Promise((resolve, reject) => {
           const tx = db.transaction('screenshots', 'readwrite');
           tx.objectStore('screenshots').put({
@@ -656,13 +652,24 @@ function renderGallery(mediaItems) {
   });
 }
 
-// Read media directly from IndexedDB (blobs can't survive chrome.runtime.sendMessage)
-async function getMediaFromDB(sessionId) {
-  const db = await new Promise((resolve, reject) => {
+// Open IndexedDB with store creation to avoid missing-store errors
+function openMediaDB() {
+  return new Promise((resolve, reject) => {
     const req = indexedDB.open('debug-helper', 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('screenshots')) {
+        db.createObjectStore('screenshots', { keyPath: 'id' });
+      }
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+// Read media directly from IndexedDB (blobs can't survive chrome.runtime.sendMessage)
+async function getMediaFromDB(sessionId) {
+  const db = await openMediaDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('screenshots', 'readonly');
     const req = tx.objectStore('screenshots').getAll();
