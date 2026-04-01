@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Debug Helper",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Capture debug context and export structured reports for coding agents",
   "permissions": [
     "activeTab",
