@@ -328,12 +328,21 @@ const SW = {
     chrome.action.setBadgeBackgroundColor({ color: recording ? '#e53e3e' : '#000' });
   },
 
+  flushIntervalId: null,
+
   startKeepalive() {
     chrome.alarms.create(this.KEEPALIVE_NAME, { periodInMinutes: 0.4 });
+    // Start periodic flush only during active recording
+    if (this.flushIntervalId) clearInterval(this.flushIntervalId);
+    this.flushIntervalId = setInterval(() => this.flushBuffer(), this.FLUSH_INTERVAL);
   },
 
   stopKeepalive() {
     chrome.alarms.clear(this.KEEPALIVE_NAME);
+    if (this.flushIntervalId) {
+      clearInterval(this.flushIntervalId);
+      this.flushIntervalId = null;
+    }
   }
 };
 
@@ -355,7 +364,6 @@ chrome.commands.onCommand.addListener(async (command) => {
 });
 
 SW.init();
-setInterval(() => SW.flushBuffer(), SW.FLUSH_INTERVAL);
 
 // --- Dev auto-reload (disabled in production builds) ---
 // To enable during development, set localStorage['debug-helper-dev'] = '1'
