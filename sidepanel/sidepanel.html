@@ -11,13 +11,14 @@
       <h1>Debug Helper</h1>
       <div style="display:flex;gap:6px;align-items:center">
         <button id="btn-quick-export" class="btn btn-sm" title="Quick export: copy markdown to clipboard">Quick Copy</button>
+        <button id="btn-record" class="btn btn-sm btn-record" title="Start recording">Record</button>
         <div id="status" class="status-badge">Idle</div>
       </div>
     </header>
 
     <nav class="tabs">
       <button class="tab active" data-tab="feed">Live Feed</button>
-      <button class="tab" data-tab="screenshots">Screenshots</button>
+      <button class="tab" data-tab="screenshots">Media</button>
       <button class="tab" data-tab="history">History</button>
       <button class="tab" data-tab="export">Export</button>
     </nav>
@@ -28,11 +29,15 @@
       <button class="filter-btn" data-filter="event:console">Console</button>
       <button class="filter-btn" data-filter="event:network">Network</button>
       <button class="filter-btn" data-filter="event:note">Notes</button>
+      <button class="filter-btn" data-filter="media">Media</button>
+      <button id="btn-autoscroll" class="scroll-btn" title="Toggle auto-scroll">Auto ↓</button>
     </div>
 
     <div class="note-bar hidden" id="note-bar">
       <input type="text" id="note-input" placeholder="Add a note or command..." autocomplete="off">
       <button id="btn-add-note" class="btn btn-sm btn-primary">Add</button>
+      <button id="btn-feed-capture" class="btn btn-sm" title="Capture screenshot">Capture</button>
+      <button id="btn-video" class="btn btn-sm btn-video" title="Record tab video">Video</button>
     </div>
 
     <section id="tab-feed" class="tab-content active">
@@ -40,9 +45,6 @@
     </section>
 
     <section id="tab-screenshots" class="tab-content">
-      <div class="controls-row">
-        <button id="btn-capture" class="btn btn-sm btn-primary">Capture Screenshot</button>
-      </div>
       <div id="gallery" class="gallery"></div>
     </section>
 
@@ -67,7 +69,7 @@
           <div class="filter-section-title">Network</div>
           <label><input type="checkbox" data-filter="network" checked> Include network</label>
           <label><input type="checkbox" data-filter="networkErrorsOnly" checked> Errors only (4xx/5xx)</label>
-        </div>
+                  </div>
         <div class="filter-section">
           <div class="filter-section-title">Clean up</div>
           <label><input type="checkbox" data-filter="dedup" checked> Deduplicate rapid clicks</label>

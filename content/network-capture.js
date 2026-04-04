@@ -27,23 +27,43 @@
 
   // Wrap fetch
   const origFetch = window.fetch;
+
+  function extractBody(body) {
+    if (!body) return null;
+    try {
+      if (typeof body === 'string') return body.slice(0, MAX_BODY);
+      if (body instanceof URLSearchParams) return body.toString().slice(0, MAX_BODY);
+      if (body instanceof FormData || body instanceof Blob || body instanceof ReadableStream || body instanceof ArrayBuffer) return null;
+      return JSON.stringify(body).slice(0, MAX_BODY);
+    } catch { return null; }
+  }
+
   window.fetch = async function (input, init) {
-    const method = (init?.method || 'GET').toUpperCase();
+    const isRequest = input instanceof Request;
+    const method = (init?.method || (isRequest ? input.method : 'GET')).toUpperCase();
     const url = typeof input === 'string' ? input : input.url;
     const start = Date.now();
+
+    // Capture request body for mutating methods
+    let requestBody = null;
+    if (/^(POST|PUT|PATCH|DELETE)$/.test(method)) {
+      requestBody = extractBody(init?.body) || (isRequest ? extractBody(input.body) : null);
+    }
 
     try {
       const response = await origFetch.call(this, input, init);
       const duration = Date.now() - start;
       const entry = { timestamp: start, method, url, status: response.status, duration };
 
-      if (response.status >= 400) {
-        try {
-          const clone = response.clone();
-          const text = await clone.text();
-          entry.responseBody = text.slice(0, MAX_BODY);
-        } catch {}
-      }
+      if (requestBody) entry.requestBody = requestBody;
+
+      // Always capture response body
+      try {
+        const clone = response.clone();
+        const text = await clone.text();
+        if (text.length > 0) entry.responseBody = text.slice(0, MAX_BODY);
+      } catch {}
+
       post(entry);
       return response;
     } catch (err) {
@@ -64,17 +84,22 @@
 
   XMLHttpRequest.prototype.send = function (body) {
     const start = Date.now();
+    const method = (this.__dh_method || 'GET').toUpperCase();
+    // Capture request body for mutating methods
+    let requestBody = null;
+    if (body && /^(POST|PUT|PATCH|DELETE)$/.test(method)) {
+      try { requestBody = typeof body === 'string' ? body.slice(0, MAX_BODY) : JSON.stringify(body).slice(0, MAX_BODY); } catch {}
+    }
     this.addEventListener('loadend', function () {
       const entry = {
         timestamp: start,
-        method: (this.__dh_method || 'GET').toUpperCase(),
+        method,
         url: this.__dh_url || '',
         status: this.status,
         duration: Date.now() - start
       };
-      if (this.status >= 400) {
-        try { entry.responseBody = (this.responseText || '').slice(0, MAX_BODY); } catch {}
-      }
+      if (requestBody) entry.requestBody = requestBody;
+      try { const rt = (this.responseText || ''); if (rt.length > 0) entry.responseBody = rt.slice(0, MAX_BODY); } catch {}
       post(entry);
     });
     return origSend.call(this, body);
