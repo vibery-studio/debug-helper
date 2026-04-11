@@ -19,6 +19,7 @@ const Redact = {
     if (copy.message) copy.message = this.str(copy.message);
     if (copy.stack) copy.stack = this.str(copy.stack);
     if (copy.url) copy.url = this.str(copy.url);
+    if (copy.requestBody) copy.requestBody = this.str(copy.requestBody);
     if (copy.responseBody) copy.responseBody = this.str(copy.responseBody);
     if (copy.value) copy.value = this.str(copy.value);
     if (copy.content) copy.content = this.str(copy.content);
@@ -30,6 +31,7 @@ const SW = {
   eventBuffer: [],
   FLUSH_INTERVAL: 2000,
   FLUSH_SIZE: 50,
+  _flushTimer: null,
   KEEPALIVE_NAME: 'debug-helper-keepalive',
 
   async init() {
@@ -65,7 +67,9 @@ const SW = {
       case 'session:clear': return this.clearSession(msg.sessionId);
       case 'session:update': return this.updateSession(msg.sessionId, msg.updates);
       case 'session:list': return Storage.listSessions();
+      case 'session:flush': return this.flushBuffer();
       case 'screenshot:capture': return this.captureScreenshot(msg.tabId);
+      case 'video:streamId': return this.getTabStreamId(msg.tabId);
       case 'screenshot:save': return this.saveAnnotatedScreenshot(msg);
       case 'screenshot:list': return this.listScreenshots(msg.sessionId);
       case 'storage:usage': return Storage.getStorageUsage();
@@ -78,6 +82,7 @@ const SW = {
       case 'event:network':
       case 'event:network:enhanced':
       case 'event:note':
+      case 'event:video':
         return this.bufferEvent(msg);
       default:
         return { error: 'Unknown message type: ' + msg.type };
@@ -197,6 +202,10 @@ const SW = {
 
     if (this.eventBuffer.length >= this.FLUSH_SIZE) {
       await this.flushBuffer();
+    } else {
+      // Debounced flush — write to storage 500ms after last event for snappy UI
+      clearTimeout(this._flushTimer);
+      this._flushTimer = setTimeout(() => this.flushBuffer(), 500);
     }
     return { buffered: true };
   },
@@ -253,6 +262,21 @@ const SW = {
     });
   },
 
+  async getTabStreamId(tabId) {
+    const session = await Storage.getCurrentSession();
+    const tid = tabId || session?.tabId;
+    if (!tid) return { error: 'No active tab' };
+    return new Promise((resolve) => {
+      chrome.tabCapture.getMediaStreamId({ targetTabId: tid }, (streamId) => {
+        if (chrome.runtime.lastError) {
+          resolve({ error: chrome.runtime.lastError.message });
+        } else {
+          resolve({ streamId });
+        }
+      });
+    });
+  },
+
   async listScreenshots(sessionId) {
     const sid = sessionId || (await Storage.getCurrentSession())?.id;
     if (!sid) return [];
@@ -286,8 +310,18 @@ const SW = {
       entries.push({ name: sf.filename, data: new Uint8Array(buf) });
     }
 
-    // Remove internal field before serializing
+    // Video files
+    const videoFiles = data.debugReport._videoFiles || [];
+    for (const vf of videoFiles) {
+      if (vf.blob) {
+        const buf = await vf.blob.arrayBuffer();
+        entries.push({ name: vf.filename, data: new Uint8Array(buf) });
+      }
+    }
+
+    // Remove internal fields before serializing
     delete data.debugReport._screenshotFiles;
+    delete data.debugReport._videoFiles;
 
     // Report file
     if (format === 'markdown') {
@@ -311,13 +345,20 @@ const SW = {
   },
 
   async exportSession(sessionId, format, filters) {
-    if (format === 'json') return Export.generateJSON(sessionId, filters);
+    if (format === 'json') {
+      const data = await Export.generateJSON(sessionId, filters);
+      if (!data) return null;
+      // Strip internal fields with Blob objects — they can't survive message passing
+      delete data.debugReport._screenshotFiles;
+      delete data.debugReport._videoFiles;
+      return data;
+    }
     if (format === 'toon') {
       const data = await Export.generateJSON(sessionId, filters);
       if (!data) return null;
-      // Remove internal _screenshotFiles before encoding
       const report = { ...data.debugReport };
       delete report._screenshotFiles;
+      delete report._videoFiles;
       return { toon: Toon.encode({ debugReport: report }) };
     }
     return { markdown: await Export.generateMarkdown(sessionId, filters) };

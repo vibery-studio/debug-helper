@@ -2,6 +2,8 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
 let activeFilter = 'all';
+let autoScroll = true; // auto-scroll feed to bottom
+let cachedScreenshots = []; // shared screenshot cache for feed thumbnails
 let currentSessionId = null;   // the session being viewed (from history or active)
 let activeSessionId = null;    // the currently recording session (set by service worker)
 let viewingHistorical = false; // true when viewing a past session from history
@@ -19,6 +21,11 @@ $$('.tab').forEach(tab => {
     tab.classList.add('active');
     $(`#tab-${tab.dataset.tab}`).classList.add('active');
     $('#filters').classList.toggle('hidden', tab.dataset.tab !== 'feed');
+    if (tab.dataset.tab !== 'feed') {
+      $('#note-bar').classList.add('hidden');
+    } else if (activeSessionId) {
+      $('#note-bar').classList.remove('hidden');
+    }
     if (tab.dataset.tab === 'history') loadHistory();
   });
 });
@@ -33,10 +40,27 @@ $$('.filter-btn').forEach(btn => {
   });
 });
 
+// Auto-scroll pause toggle
+$('#btn-autoscroll').addEventListener('click', () => {
+  autoScroll = !autoScroll;
+  const btn = $('#btn-autoscroll');
+  btn.textContent = autoScroll ? 'Auto ↓' : 'Paused';
+  btn.classList.toggle('paused', !autoScroll);
+  if (autoScroll) {
+    const feed = $('#feed');
+    feed.scrollTop = feed.scrollHeight;
+  }
+});
+
 function applyFilter() {
   $$('.event-item').forEach(el => {
     if (activeFilter === 'all') { el.classList.remove('hidden'); return; }
-    el.classList.toggle('hidden', el.dataset.type !== activeFilter);
+    if (activeFilter === 'media') {
+      // Media filter: show screenshots and video notes
+      el.classList.toggle('hidden', el.dataset.type !== 'event:screenshot' && el.dataset.type !== 'event:video');
+    } else {
+      el.classList.toggle('hidden', el.dataset.type !== activeFilter);
+    }
   });
 }
 
@@ -45,6 +69,8 @@ function badgeClass(type) {
   if (type === 'event:console') return 'badge-warn';
   if (type.includes('network')) return 'badge-network';
   if (type === 'event:note') return 'badge-note';
+  if (type === 'event:screenshot') return 'badge-info';
+  if (type === 'event:video') return 'badge-info';
   return 'badge-info';
 }
 
@@ -61,6 +87,8 @@ function eventLabel(ev) {
   if (ev.type === 'event:console') return `<span class="badge ${ev.level === 'error' ? 'badge-error' : 'badge-warn'}">${ev.level}</span> ${escHtml(ev.message).slice(0, 200)}`;
   if (ev.type.includes('network')) return `<strong>${ev.method}</strong> ${escHtml(ev.url).slice(0, 100)} → <span class="${ev.status >= 400 ? 'badge-error' : ''}">${ev.status}</span> (${ev.duration}ms)`;
   if (ev.type === 'event:note') return `<strong>📝</strong> ${escHtml(ev.content)}`;
+  if (ev.type === 'event:screenshot') return `<strong>📸</strong> Screenshot captured`;
+  if (ev.type === 'event:video') return `<strong>🎥</strong> ${escHtml(ev.content)}`;
   return JSON.stringify(ev).slice(0, 200);
 }
 
@@ -70,20 +98,189 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+// Render a body block with pretty/copy buttons for JSON content
+function renderBodyBlock(label, body) {
+  if (!body) {
+    const empty = document.createElement('div');
+    empty.innerHTML = `<b>${label}:</b> <i>none</i>`;
+    return empty;
+  }
+
+  // Try to detect and pretty-print JSON
+  let prettyBody = null;
+  const trimmed = body.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try { prettyBody = JSON.stringify(JSON.parse(trimmed), null, 2); } catch {}
+  }
+
+  const container = document.createElement('div');
+  container.innerHTML = `<b>${label}:</b>`;
+
+  const actions = document.createElement('div');
+  actions.className = 'body-actions';
+
+  const pre = document.createElement('pre');
+  pre.textContent = (prettyBody || body).slice(0, 3000);
+
+  if (prettyBody) {
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'btn-body-toggle';
+    toggleBtn.textContent = 'Raw';
+    toggleBtn._raw = body.slice(0, 3000);
+    toggleBtn._pretty = prettyBody.slice(0, 3000);
+    toggleBtn._pre = pre;
+    actions.appendChild(toggleBtn);
+  }
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'btn-body-copy';
+  copyBtn.textContent = 'Copy';
+  copyBtn._pre = pre;
+  actions.appendChild(copyBtn);
+
+  container.appendChild(actions);
+  container.appendChild(pre);
+  return container;
+}
+
+// Build expanded detail DOM element for an event
+function buildEventDetails(ev) {
+  const container = document.createElement('div');
+
+  function addRow(html) {
+    const row = document.createElement('div');
+    row.innerHTML = html;
+    container.appendChild(row);
+  }
+
+  if (ev.type === 'event:dom') {
+    const ctx = ev.context || {};
+    addRow(`<b>Event:</b> ${escHtml(ev.eventType)}`);
+    addRow(`<b>Selector:</b> <code>${escHtml(ev.selector)}</code>`);
+    if (ctx.tag) addRow(`<b>Tag:</b> ${escHtml(ctx.tag)}`);
+    if (ctx.text) addRow(`<b>Text:</b> ${escHtml(ctx.text)}`);
+    if (ev.value) addRow(`<b>Value:</b> ${escHtml(ev.value)}`);
+    if (ctx.id) addRow(`<b>ID:</b> ${escHtml(ctx.id)}`);
+    if (ctx.className) addRow(`<b>Class:</b> ${escHtml(ctx.className)}`);
+  } else if (ev.type === 'event:console') {
+    addRow(`<b>Level:</b> ${escHtml(ev.level)}`);
+    addRow(`<b>Message:</b> ${escHtml(ev.message)}`);
+    if (ev.stack) addRow(`<b>Stack:</b><pre>${escHtml(ev.stack)}</pre>`);
+  } else if (ev.type.includes('network')) {
+    addRow(`<b>Method:</b> ${escHtml(ev.method)}`);
+    addRow(`<b>URL:</b> ${escHtml(ev.url)}`);
+    addRow(`<b>Status:</b> ${ev.status} · <b>Duration:</b> ${ev.duration}ms`);
+    container.appendChild(renderBodyBlock('Request Body', ev.requestBody));
+    container.appendChild(renderBodyBlock('Response Body', ev.responseBody));
+  } else if (ev.type === 'event:note') {
+    addRow(`<b>Note:</b> ${escHtml(ev.content)}`);
+  } else if (ev.type === 'event:video') {
+    addRow(`<b>Video:</b> ${escHtml(ev.content)}`);
+  }
+  addRow(`<b>Time:</b> ${new Date(ev.timestamp).toLocaleString()}`);
+  return container;
+}
+
 function renderEvent(ev) {
   const div = document.createElement('div');
-  div.className = 'event-item' + (ev.type === 'event:note' ? ' note-event' : '');
+  div.className = 'event-item' + (ev.type === 'event:note' ? ' note-event' : '') + (ev.type === 'event:screenshot' ? ' screenshot-event' : '') + (ev.type === 'event:video' ? ' video-event' : '');
   div.dataset.type = ev.type;
   const t = new Date(ev.timestamp);
   const time = t.toLocaleTimeString() + '.' + String(t.getMilliseconds()).padStart(3, '0');
   div.innerHTML = `<span class="time">${time}</span> <span class="badge ${badgeClass(ev.type)}">${ev.type.split(':').pop()}</span><div class="detail">${eventLabel(ev)}</div>`;
+
+  // Expandable details on click (skip for screenshots/videos — thumbnail is already visible)
+  if (ev.type !== 'event:screenshot' && ev.type !== 'event:video') {
+    const detailsDiv = document.createElement('div');
+    detailsDiv.className = 'event-details hidden';
+    detailsDiv.appendChild(buildEventDetails(ev));
+    div.appendChild(detailsDiv);
+
+    div.addEventListener('click', (e) => {
+      // Handle body action buttons
+      const toggleBtn = e.target.closest('.btn-body-toggle');
+      if (toggleBtn) {
+        e.stopPropagation();
+        const isRaw = toggleBtn.textContent === 'Raw';
+        toggleBtn._pre.textContent = isRaw ? toggleBtn._raw : toggleBtn._pretty;
+        toggleBtn.textContent = isRaw ? 'Pretty' : 'Raw';
+        return;
+      }
+      const copyBtn = e.target.closest('.btn-body-copy');
+      if (copyBtn) {
+        e.stopPropagation();
+        navigator.clipboard.writeText(copyBtn._pre.textContent).then(() => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1000);
+        });
+        return;
+      }
+      // Toggle expand
+      div.classList.toggle('expanded');
+      detailsDiv.classList.toggle('hidden');
+    });
+  }
+
+  // Show thumbnail for screenshot events using cached data
+  if (ev.type === 'event:screenshot' && ev.screenshotId) {
+    const s = cachedScreenshots.find(sc => sc.id === ev.screenshotId);
+    if (s) {
+      const thumb = document.createElement('img');
+      thumb.className = 'feed-screenshot-thumb';
+      thumb.dataset.screenshotId = ev.screenshotId;
+      thumb.title = 'Click to open annotator';
+      thumb.src = s.annotatedDataUrl || s.dataUrl;
+      thumb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        chrome.windows.create({
+          url: chrome.runtime.getURL(`annotator/annotator.html?id=${ev.screenshotId}`),
+          type: 'popup', width: 900, height: 700
+        });
+      });
+      div.appendChild(thumb);
+    }
+  }
+
+  // Show video thumbnail for video events — click opens in popup viewer
+  if (ev.type === 'event:video' && ev.videoId) {
+    const v = cachedScreenshots.find(sc => sc.id === ev.videoId);
+    if (v && v.videoBlob) {
+      const video = document.createElement('video');
+      video.className = 'feed-video-thumb';
+      video.src = URL.createObjectURL(v.videoBlob);
+      video.preload = 'metadata';
+      video.title = 'Click to open video';
+      video.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const blobUrl = URL.createObjectURL(v.videoBlob);
+        const w = window.open('', '_blank', 'width=900,height=700');
+        w.document.title = 'Debug Helper - Video';
+        w.document.body.style.cssText = 'margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh';
+        const player = w.document.createElement('video');
+        player.src = blobUrl;
+        player.controls = true;
+        player.autoplay = true;
+        player.style.maxWidth = '100%';
+        player.style.maxHeight = '100%';
+        w.document.body.appendChild(player);
+      });
+      div.appendChild(video);
+    }
+  }
+
   return div;
 }
 
 async function loadFeed() {
-  const state = await send({ type: 'session:get' });
+  let state;
+  try {
+    state = await send({ type: 'session:get' });
+  } catch { return; } // service worker unavailable
   const statusEl = $('#status');
   const noteBar = $('#note-bar');
+
+  // Check which tab is active — only show note-bar on feed tab
+  const onFeedTab = document.querySelector('.tab[data-tab="feed"]')?.classList.contains('active');
 
   if (state.recording) {
     statusEl.textContent = 'Recording';
@@ -91,7 +288,7 @@ async function loadFeed() {
     activeSessionId = state.session.id;
     currentSessionId = state.session.id;
     viewingHistorical = false;
-    noteBar.classList.remove('hidden');
+    if (onFeedTab) noteBar.classList.remove('hidden');
   } else if (state.session) {
     noteBar.classList.add('hidden');
     // Session exists (either just stopped or from lastSessionId)
@@ -118,6 +315,8 @@ async function loadFeed() {
     noteBar.classList.add('hidden');
   }
 
+  updateRecordButton();
+
   if (!currentSessionId) return;
 
   const sid = currentSessionId;
@@ -129,13 +328,72 @@ async function loadFeed() {
     }
   }
 
+  // Always refresh screenshot cache to pick up annotation edits
+  // Read directly from IndexedDB to preserve video blobs (can't survive message passing)
+  try {
+    cachedScreenshots = await getMediaFromDB(sid);
+  } catch { cachedScreenshots = []; }
+
   if (events.length !== knownEventCount) {
+    events.sort((a, b) => a.timestamp - b.timestamp);
     const feed = $('#feed');
-    feed.innerHTML = '';
-    events.forEach(ev => feed.appendChild(renderEvent(ev)));
-    feed.scrollTop = feed.scrollHeight;
+    if (events.length > knownEventCount && knownEventCount > 0) {
+      // Append only new events to preserve expanded state
+      const newEvents = events.slice(knownEventCount);
+      newEvents.forEach(ev => feed.appendChild(renderEvent(ev)));
+    } else {
+      // Full re-render (first load, session switch, or events decreased)
+      feed.innerHTML = '';
+      events.forEach(ev => feed.appendChild(renderEvent(ev)));
+    }
+    if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
     knownEventCount = events.length;
     applyFilter();
+    renderGallery(cachedScreenshots);
+  } else {
+    // Update existing feed thumbnails with latest screenshot data (e.g. after annotation)
+    $$('.feed-screenshot-thumb').forEach(thumb => {
+      const s = cachedScreenshots.find(sc => sc.id === thumb.dataset.screenshotId);
+      if (s) {
+        const newSrc = s.annotatedDataUrl || s.dataUrl;
+        if (thumb.src !== newSrc) thumb.src = newSrc;
+      }
+    });
+    renderGallery(cachedScreenshots);
+  }
+}
+
+// Toggle recording
+$('#btn-record').addEventListener('click', async () => {
+  const btn = $('#btn-record');
+  btn.disabled = true;
+  try {
+    if (activeSessionId) {
+      // Stop video recording if active — wait for save to complete before ending session
+      if (videoRecorder && videoRecorder.state === 'recording') await stopVideoRecording();
+      await send({ type: 'session:stop' });
+    } else {
+      await send({ type: 'session:start' });
+    }
+    knownEventCount = -1;
+    loadFeed();
+  } catch (err) {
+    console.error('[Debug Helper] Record toggle failed:', err);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function updateRecordButton() {
+  const btn = $('#btn-record');
+  if (activeSessionId) {
+    btn.textContent = 'Stop';
+    btn.title = 'Stop recording';
+    btn.classList.add('recording');
+  } else {
+    btn.textContent = 'Record';
+    btn.title = 'Start recording';
+    btn.classList.remove('recording');
   }
 }
 
@@ -146,41 +404,286 @@ async function addNote() {
   if (!text) return;
   input.value = '';
   await send({ type: 'event:note', content: text, timestamp: Date.now() });
-  knownEventCount = -1; // force refresh
-  loadFeed();
+  // Flush buffer immediately so the note appears in storage right away
+  await send({ type: 'session:flush' });
 }
 
 $('#btn-add-note').addEventListener('click', addNote);
+$('#btn-add-note').disabled = true;
+$('#note-input').addEventListener('input', () => {
+  $('#btn-add-note').disabled = !$('#note-input').value.trim();
+});
 $('#note-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') addNote();
 });
 
-// Screenshots
-$('#btn-capture').addEventListener('click', async () => {
-  await send({ type: 'screenshot:capture' });
-  loadScreenshots();
+// Feed capture screenshot button
+$('#btn-feed-capture').addEventListener('click', async () => {
+  const btn = $('#btn-feed-capture');
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const result = await send({ type: 'screenshot:capture' });
+    if (result?.error) {
+      btn.textContent = 'Failed';
+      setTimeout(() => { btn.textContent = 'Capture'; }, 1500);
+      return;
+    }
+    knownEventCount = -1;
+    loadFeed();
+    btn.textContent = 'Capture';
+  } catch {
+    btn.textContent = 'Failed';
+    setTimeout(() => { btn.textContent = 'Capture'; }, 1500);
+  } finally {
+    btn.disabled = false;
+  }
 });
+
+// Video recording
+let videoRecorder = null;
+let videoChunks = [];
+let videoStream = null;
+let videoSessionId = null; // capture session ID at recording start
+
+async function startVideoRecording() {
+  const btn = $('#btn-video');
+  if (!activeSessionId) {
+    btn.textContent = 'Record first';
+    setTimeout(() => { btn.textContent = 'Video'; }, 1500);
+    return;
+  }
+  try {
+    const result = await send({ type: 'video:streamId' });
+    if (result?.error) {
+      btn.textContent = 'Failed';
+      setTimeout(() => { btn.textContent = 'Video'; }, 1500);
+      return;
+    }
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: result.streamId,
+        }
+      }
+    });
+    videoChunks = [];
+    videoSessionId = currentSessionId;
+    videoRecorder = new MediaRecorder(videoStream, { mimeType: 'video/webm;codecs=vp9' });
+    videoRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) videoChunks.push(e.data);
+    };
+    videoRecorder.onstop = async () => {
+      const blob = new Blob(videoChunks, { type: 'video/webm' });
+      videoChunks = [];
+      const videoId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      // Save video blob directly to IndexedDB from sidepanel
+      try {
+        const db = await openMediaDB();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction('screenshots', 'readwrite');
+          tx.objectStore('screenshots').put({
+            id: videoId,
+            sessionId: videoSessionId,
+            mediaType: 'video',
+            videoBlob: blob,
+            timestamp: Date.now()
+          });
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch (err) {
+        console.error('[Debug Helper] Failed to save video:', err);
+      }
+      // Refresh cache BEFORE writing event so renderEvent can find the video blob
+      const sid = videoSessionId;
+      if (sid) {
+        cachedScreenshots = await getMediaFromDB(sid);
+        renderGallery(cachedScreenshots);
+
+        const videoEvent = {
+          type: 'event:video',
+          content: `Video recorded (${(blob.size / 1024 / 1024).toFixed(1)} MB)`,
+          videoId,
+          timestamp: Date.now(),
+          _sessionId: sid
+        };
+        // Try sending through service worker buffer first (avoids race with flushBuffer)
+        let buffered = false;
+        try {
+          const result = await send(videoEvent);
+          buffered = result && result.buffered;
+        } catch { /* service worker unavailable */ }
+        // Fallback: write directly if buffer didn't accept (session already stopped)
+        if (!buffered) {
+          const allKeys = await chrome.storage.local.get(null);
+          let lastChunk = 0;
+          for (const k in allKeys) {
+            if (k.startsWith('events:' + sid + ':')) {
+              const idx = parseInt(k.split(':')[2], 10);
+              if (idx > lastChunk) lastChunk = idx;
+            }
+          }
+          const chunkKey = `events:${sid}:${lastChunk}`;
+          // Fresh read of just this chunk to minimize race window
+          const freshData = await chrome.storage.local.get(chunkKey);
+          const existing = freshData[chunkKey] || [];
+          existing.push(videoEvent);
+          await chrome.storage.local.set({ [chunkKey]: existing });
+        }
+      }
+    };
+    videoRecorder.start(1000); // collect in 1s chunks
+    btn.textContent = 'Stop';
+    btn.classList.add('recording-video');
+  } catch (err) {
+    console.error('[Debug Helper] Video recording failed:', err);
+    btn.textContent = 'Failed';
+    setTimeout(() => { btn.textContent = 'Video'; }, 1500);
+  }
+}
+
+// Returns a promise that resolves after onstop handler completes
+function stopVideoRecording() {
+  const btn = $('#btn-video');
+  btn.textContent = 'Saving...';
+  btn.classList.remove('recording-video');
+  return new Promise((resolve) => {
+    if (videoRecorder && videoRecorder.state !== 'inactive') {
+      const origOnStop = videoRecorder.onstop;
+      videoRecorder.onstop = async (e) => {
+        // Run original handler first (saves blob + event)
+        if (origOnStop) await origOnStop(e);
+        // Clean up stream and recorder AFTER save completes
+        if (videoStream) {
+          videoStream.getTracks().forEach(t => t.stop());
+          videoStream = null;
+        }
+        videoRecorder = null;
+        btn.textContent = 'Video';
+        resolve();
+      };
+      videoRecorder.stop();
+    } else {
+      if (videoStream) {
+        videoStream.getTracks().forEach(t => t.stop());
+        videoStream = null;
+      }
+      videoRecorder = null;
+      btn.textContent = 'Video';
+      resolve();
+    }
+  });
+}
+
+$('#btn-video').addEventListener('click', () => {
+  if (videoRecorder && videoRecorder.state === 'recording') {
+    stopVideoRecording();
+  } else {
+    startVideoRecording();
+  }
+});
+
+// Render gallery from media array (screenshots + videos)
+function renderGallery(mediaItems) {
+  const gallery = $('#gallery');
+  gallery.innerHTML = '';
+  mediaItems.forEach(s => {
+    if (s.mediaType === 'video' && s.videoBlob) {
+      // Video item
+      const wrapper = document.createElement('div');
+      wrapper.className = 'gallery-video';
+      const video = document.createElement('video');
+      video.src = URL.createObjectURL(s.videoBlob);
+      video.controls = true;
+      video.preload = 'metadata';
+      video.title = new Date(s.timestamp).toLocaleString();
+      // Action buttons
+      const actions = document.createElement('div');
+      actions.className = 'gallery-video-actions';
+      // Open in popup
+      const openBtn = document.createElement('button');
+      openBtn.className = 'btn btn-sm btn-primary';
+      openBtn.textContent = 'Open';
+      openBtn.addEventListener('click', () => {
+        const blobUrl = URL.createObjectURL(s.videoBlob);
+        const w = window.open('', '_blank', 'width=900,height=700');
+        w.document.title = 'Debug Helper - Video';
+        w.document.body.style.cssText = 'margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh';
+        const v = w.document.createElement('video');
+        v.src = blobUrl;
+        v.controls = true;
+        v.autoplay = true;
+        v.style.maxWidth = '100%';
+        v.style.maxHeight = '100%';
+        w.document.body.appendChild(v);
+      });
+      // Download
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'btn btn-sm';
+      dlBtn.textContent = 'Download';
+      dlBtn.addEventListener('click', () => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(s.videoBlob);
+        const ts = new Date(s.timestamp).toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.download = `debug-video-${ts}.webm`;
+        a.click();
+      });
+      actions.appendChild(openBtn);
+      actions.appendChild(dlBtn);
+      wrapper.appendChild(video);
+      wrapper.appendChild(actions);
+      gallery.appendChild(wrapper);
+    } else {
+      // Screenshot item
+      const img = document.createElement('img');
+      img.src = s.annotatedDataUrl || s.dataUrl;
+      img.title = new Date(s.timestamp).toLocaleString();
+      img.addEventListener('click', () => {
+        chrome.windows.create({
+          url: chrome.runtime.getURL(`annotator/annotator.html?id=${s.id}`),
+          type: 'popup', width: 900, height: 700
+        });
+      });
+      gallery.appendChild(img);
+    }
+  });
+}
+
+// Open IndexedDB with store creation to avoid missing-store errors
+function openMediaDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('debug-helper', 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('screenshots')) {
+        db.createObjectStore('screenshots', { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// Read media directly from IndexedDB (blobs can't survive chrome.runtime.sendMessage)
+async function getMediaFromDB(sessionId) {
+  const db = await openMediaDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('screenshots', 'readonly');
+    const req = tx.objectStore('screenshots').getAll();
+    req.onsuccess = () => {
+      resolve(req.result.filter(s => s.sessionId === sessionId).sort((a, b) => a.timestamp - b.timestamp));
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
 
 async function loadScreenshots() {
   if (!currentSessionId) return;
-  const screenshots = await send({ type: 'screenshot:list', sessionId: currentSessionId });
-  const gallery = $('#gallery');
-  gallery.innerHTML = '';
-  screenshots.forEach(s => {
-    const img = document.createElement('img');
-    img.src = s.annotatedDataUrl || s.dataUrl;
-    img.title = new Date(s.timestamp).toLocaleString();
-    img.addEventListener('click', () => {
-      // Open annotator
-      chrome.windows.create({
-        url: chrome.runtime.getURL(`annotator/annotator.html?id=${s.id}`),
-        type: 'popup',
-        width: 900,
-        height: 700
-      });
-    });
-    gallery.appendChild(img);
-  });
+  cachedScreenshots = await getMediaFromDB(currentSessionId);
+  renderGallery(cachedScreenshots);
 }
 
 // View a specific session (from history click)
@@ -211,31 +714,22 @@ async function loadFeedForSession(sessionId) {
     }
   }
 
+  // Refresh media cache before rendering (read directly from IndexedDB to preserve blobs)
+  cachedScreenshots = await getMediaFromDB(sid);
+  events.sort((a, b) => a.timestamp - b.timestamp);
   const feed = $('#feed');
   feed.innerHTML = '';
   events.forEach(ev => feed.appendChild(renderEvent(ev)));
-  feed.scrollTop = feed.scrollHeight;
+  if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
   knownEventCount = events.length;
   applyFilter();
+  renderGallery(cachedScreenshots);
 }
 
 async function loadScreenshotsForSession(sessionId) {
   if (!sessionId) return;
-  const screenshots = await send({ type: 'screenshot:list', sessionId });
-  const gallery = $('#gallery');
-  gallery.innerHTML = '';
-  screenshots.forEach(s => {
-    const img = document.createElement('img');
-    img.src = s.annotatedDataUrl || s.dataUrl;
-    img.title = new Date(s.timestamp).toLocaleString();
-    img.addEventListener('click', () => {
-      chrome.windows.create({
-        url: chrome.runtime.getURL(`annotator/annotator.html?id=${s.id}`),
-        type: 'popup', width: 900, height: 700
-      });
-    });
-    gallery.appendChild(img);
-  });
+  cachedScreenshots = await getMediaFromDB(sessionId);
+  renderGallery(cachedScreenshots);
 }
 
 // History
@@ -385,7 +879,10 @@ async function generatePreview(format) {
     } else {
       // Strip internal fields from preview/copy
       const clean = JSON.parse(JSON.stringify(result));
-      if (clean.debugReport) delete clean.debugReport._screenshotFiles;
+      if (clean.debugReport) {
+        delete clean.debugReport._screenshotFiles;
+        delete clean.debugReport._videoFiles;
+      }
       lastExportText = JSON.stringify(clean, null, 2);
       lastExportFormat = 'json';
     }
@@ -409,10 +906,7 @@ $('#btn-quick-export').addEventListener('click', async () => {
   btn.textContent = 'Exporting...';
   btn.disabled = true;
   try {
-    const result = await send({ type: 'export:generate', sessionId: sid, format: 'markdown', filters: {
-      steps: true, console: true, network: true, networkErrorsOnly: true,
-      screenshots: true, dedup: true, skipScrollZero: true, screenshotAsFile: true
-    }});
+    const result = await send({ type: 'export:generate', sessionId: sid, format: 'markdown', filters: getExportFilters() });
     if (result?.markdown) {
       try { await navigator.clipboard.writeText(result.markdown); }
       catch { /* fallback */ const ta = document.createElement('textarea'); ta.value = result.markdown; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
@@ -504,14 +998,89 @@ $('#btn-download').addEventListener('click', async () => {
   }
 });
 
-// Storage change listener for live updates
+// Event-driven feed updates via storage change listener
 chrome.storage.onChanged.addListener((changes) => {
-  loadFeed();
-  // Refresh history when a session is created or ended
+  const sid = currentSessionId;
+
+  // Append new events to feed reactively (no full re-render)
+  if (sid) {
+    for (const key of Object.keys(changes)) {
+      if (key.startsWith('events:' + sid + ':') && changes[key].newValue) {
+        const newEvents = changes[key].newValue;
+        // Only process events we haven't seen (compare with oldValue)
+        const oldEvents = changes[key].oldValue || [];
+        const added = newEvents.slice(oldEvents.length);
+        if (added.length > 0) {
+          const feed = $('#feed');
+          let hasScreenshot = false;
+          added.forEach(ev => {
+            feed.appendChild(renderEvent(ev));
+            knownEventCount++;
+            if (ev.type === 'event:screenshot' || ev.type === 'event:video') hasScreenshot = true;
+          });
+          applyFilter();
+          if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
+          // Refresh gallery when new media events arrive
+          if (hasScreenshot) loadScreenshots();
+        }
+      }
+    }
+  }
+
+  // Refresh session state on session changes
   if (Object.keys(changes).some(k => k.startsWith('session:') || k === 'currentSessionId')) {
+    loadSessionState();
     loadHistory();
+    loadScreenshots();
   }
 });
+
+// Lightweight session state update (no feed re-render)
+async function loadSessionState() {
+  let state;
+  try { state = await send({ type: 'session:get' }); } catch { return; }
+  const statusEl = $('#status');
+  const noteBar = $('#note-bar');
+  const onFeedTab = document.querySelector('.tab[data-tab="feed"]')?.classList.contains('active');
+
+  if (state.recording) {
+    statusEl.textContent = 'Recording';
+    statusEl.className = 'status-badge recording';
+    activeSessionId = state.session.id;
+    if (currentSessionId !== state.session.id) {
+      currentSessionId = state.session.id;
+      viewingHistorical = false;
+      knownEventCount = 0;
+      $('#feed').innerHTML = '';
+      // Auto-enable auto-scroll when new recording starts
+      autoScroll = true;
+      const scrollBtn = $('#btn-autoscroll');
+      scrollBtn.textContent = 'Auto ↓';
+      scrollBtn.classList.remove('paused');
+    }
+    if (onFeedTab) noteBar.classList.remove('hidden');
+  } else if (state.session) {
+    noteBar.classList.add('hidden');
+    if (activeSessionId && activeSessionId === state.session.id && state.session.endTime) {
+      statusEl.textContent = 'Session ended';
+      statusEl.className = 'status-badge';
+      activeSessionId = null;
+      loadHistory();
+    } else if (!viewingHistorical) {
+      statusEl.textContent = state.session.endTime ? 'Last session' : 'Idle';
+      statusEl.className = 'status-badge';
+    } else {
+      statusEl.textContent = 'Viewing history';
+      statusEl.className = 'status-badge';
+    }
+  } else {
+    statusEl.textContent = viewingHistorical ? 'Viewing history' : 'Idle';
+    statusEl.className = 'status-badge';
+    activeSessionId = null;
+    noteBar.classList.add('hidden');
+  }
+  updateRecordButton();
+}
 
 // Initial load — check if popup requested a specific session
 (async () => {
@@ -525,7 +1094,3 @@ chrome.storage.onChanged.addListener((changes) => {
   }
   loadHistory();
 })();
-setInterval(() => {
-  loadFeed();
-  loadScreenshots();
-}, 3000);
