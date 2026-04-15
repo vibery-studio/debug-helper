@@ -193,7 +193,9 @@ const SW = {
 
   async bufferEvent(event) {
     const session = await Storage.getCurrentSession();
-    if (!session) return;
+    // Explicitly tell the caller the session is gone so it can persist the
+    // event (e.g. a late video:stop marker) through a direct storage write.
+    if (!session) return { buffered: false, reason: 'no-active-session' };
 
     // Redact sensitive data before storing
     event = Redact.event(event);

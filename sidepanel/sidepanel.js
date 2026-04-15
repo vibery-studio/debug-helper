@@ -713,16 +713,20 @@ async function startVideoRecording() {
           timestamp: Date.now(),
           _sessionId: sid
         };
-        // Prefer writing through the service worker to avoid racing with flushBuffer.
-        // Only fall back to a direct storage write if the SW is genuinely unreachable.
+        // Prefer writing through the service worker while the session is live
+        // so bufferEvent stays the single writer and there's no race with
+        // flushBuffer. When the session has already ended (e.g. the recording
+        // tab was closed and SW.onRemoved auto-stopped it), bufferEvent now
+        // returns {buffered:false}; in that case flushBuffer is a no-op, so
+        // we must persist the marker ourselves.
+        let persisted = false;
         try {
           const result = await send(videoEvent);
-          if (!result?.buffered) {
-            // SW accepted but didn't buffer (session already stopped) — request a flush
-            await send({ type: 'session:flush' });
-          }
+          persisted = !!result?.buffered;
         } catch {
-          // SW unavailable — write directly as a last resort
+          // SW unavailable — fall through to direct write
+        }
+        if (!persisted) {
           const allKeys = await chrome.storage.local.get(null);
           let lastChunk = 0;
           for (const k in allKeys) {
@@ -736,6 +740,15 @@ async function startVideoRecording() {
           const existing = freshData[chunkKey] || [];
           existing.push(videoEvent);
           await chrome.storage.local.set({ [chunkKey]: existing });
+
+          // Keep the session's eventCount in sync so it appears in the feed
+          // count when re-opened from history.
+          const sessionKey = 'session:' + sid;
+          const sessionData = (await chrome.storage.local.get(sessionKey))[sessionKey];
+          if (sessionData) {
+            sessionData.eventCount = (sessionData.eventCount || 0) + 1;
+            await chrome.storage.local.set({ [sessionKey]: sessionData });
+          }
         }
       }
     };
