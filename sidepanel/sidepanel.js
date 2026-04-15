@@ -560,17 +560,25 @@ async function openSessionStream() {
 
   // If Chrome's "Stop sharing" UI, a tab close, or a discard kills the stream,
   // drop our ref, save any in-progress video clip, and notify the user. The SW
-  // separately auto-stops the session on tab close/discard.
+  // separately auto-stops the session on tab close/discard — we optimistically
+  // mirror that locally so a user click in the window before the storage event
+  // propagates doesn't hit a cryptic getMediaStreamId error.
   stream.getTracks().forEach(t => {
     t.addEventListener('ended', () => {
       if (sessionStream !== stream) return;
       sessionStream = null;
-      showToast('Recording tab ended — capture stream closed', 'warn');
+      showToast('Recording tab ended — session stopping', 'warn');
       if (videoRecorder && videoRecorder.state === 'recording') {
-        // Fire-and-forget: persists the partial clip via the existing onstop path
         stopVideoRecording().catch(err => console.error('[Debug Helper] Stop video on stream end failed:', err));
       }
+      // Close the race with SW.onRemoved propagation
+      activeSessionId = null;
+      $('#note-bar').classList.add('hidden');
+      updateRecordButton();
       updateRecordingTarget();
+      // Pick up the SW-side stop (endTime, cleared currentSessionId) once
+      // it has committed.
+      loadSessionState();
     });
   });
 
