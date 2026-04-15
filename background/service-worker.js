@@ -345,11 +345,17 @@ const SW = {
   },
 
   async exportSession(sessionId, format, filters) {
-    if (format === 'json') return Export.generateJSON(sessionId, filters);
+    if (format === 'json') {
+      const data = await Export.generateJSON(sessionId, filters);
+      if (!data) return null;
+      // Strip internal fields with Blob objects — they can't survive message passing
+      delete data.debugReport._screenshotFiles;
+      delete data.debugReport._videoFiles;
+      return data;
+    }
     if (format === 'toon') {
       const data = await Export.generateJSON(sessionId, filters);
       if (!data) return null;
-      // Remove internal _screenshotFiles before encoding
       const report = { ...data.debugReport };
       delete report._screenshotFiles;
       delete report._videoFiles;
@@ -363,12 +369,21 @@ const SW = {
     chrome.action.setBadgeBackgroundColor({ color: recording ? '#e53e3e' : '#000' });
   },
 
+  flushIntervalId: null,
+
   startKeepalive() {
     chrome.alarms.create(this.KEEPALIVE_NAME, { periodInMinutes: 0.4 });
+    // Start periodic flush only during active recording
+    if (this.flushIntervalId) clearInterval(this.flushIntervalId);
+    this.flushIntervalId = setInterval(() => this.flushBuffer(), this.FLUSH_INTERVAL);
   },
 
   stopKeepalive() {
     chrome.alarms.clear(this.KEEPALIVE_NAME);
+    if (this.flushIntervalId) {
+      clearInterval(this.flushIntervalId);
+      this.flushIntervalId = null;
+    }
   }
 };
 
@@ -390,7 +405,6 @@ chrome.commands.onCommand.addListener(async (command) => {
 });
 
 SW.init();
-setInterval(() => SW.flushBuffer(), SW.FLUSH_INTERVAL);
 
 // --- Dev auto-reload (disabled in production builds) ---
 // To enable during development, set localStorage['debug-helper-dev'] = '1'

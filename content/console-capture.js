@@ -4,6 +4,16 @@
   if (window[PREFIX + 'consolePatched']) return;
   window[PREFIX + 'consolePatched'] = true;
 
+  let recording = false;
+
+  // Listen for recording state changes from the bridge (ISOLATED world)
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data) return;
+    if (e.data.source === 'debug-helper-control' && e.data.type === 'recording-state') {
+      recording = e.data.recording;
+    }
+  });
+
   const origConsole = {
     log: console.log.bind(console),
     warn: console.warn.bind(console),
@@ -22,6 +32,7 @@
   }
 
   function post(level, args, stack) {
+    if (!recording) return;
     window.postMessage({
       source: 'debug-helper-main',
       type: 'event:console',

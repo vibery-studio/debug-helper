@@ -4,9 +4,20 @@
   if (window[PREFIX + 'networkPatched']) return;
   window[PREFIX + 'networkPatched'] = true;
 
+  let recording = false;
+
+  // Listen for recording state changes from the bridge (ISOLATED world)
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data) return;
+    if (e.data.source === 'debug-helper-control' && e.data.type === 'recording-state') {
+      recording = e.data.recording;
+    }
+  });
+
   const MAX_BODY = 10240;
 
   function post(data) {
+    if (!recording) return;
     window.postMessage({
       source: 'debug-helper-main',
       type: 'event:network',
