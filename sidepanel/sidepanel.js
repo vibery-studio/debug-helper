@@ -7,7 +7,40 @@ let cachedScreenshots = []; // shared screenshot cache for feed thumbnails
 let currentSessionId = null;   // the session being viewed (from history or active)
 let activeSessionId = null;    // the currently recording session (set by service worker)
 let viewingHistorical = false; // true when viewing a past session from history
-let knownEventCount = 0;
+let knownEventIds = new Set(); // dedupe set for rendered events (timestamp:type)
+// Separate trackers so revoking one group doesn't invalidate <video src="blob:…">
+// elements in the other: the feed and gallery re-render on different schedules.
+let feedBlobUrls = [];
+let galleryBlobUrls = [];
+
+const eventKey = (ev) => ev.timestamp + ':' + ev.type;
+
+function trackFeedBlobUrl(blob) {
+  const url = URL.createObjectURL(blob);
+  feedBlobUrls.push(url);
+  return url;
+}
+
+function trackGalleryBlobUrl(blob) {
+  const url = URL.createObjectURL(blob);
+  galleryBlobUrls.push(url);
+  return url;
+}
+
+function revokeFeedBlobUrls() {
+  feedBlobUrls.forEach(url => URL.revokeObjectURL(url));
+  feedBlobUrls = [];
+}
+
+function revokeGalleryBlobUrls() {
+  galleryBlobUrls.forEach(url => URL.revokeObjectURL(url));
+  galleryBlobUrls = [];
+}
+
+function revokeAllBlobUrls() {
+  revokeFeedBlobUrls();
+  revokeGalleryBlobUrls();
+}
 
 async function send(msg) {
   return chrome.runtime.sendMessage(msg);
@@ -247,7 +280,7 @@ function renderEvent(ev) {
     if (v && v.videoBlob) {
       const video = document.createElement('video');
       video.className = 'feed-video-thumb';
-      video.src = URL.createObjectURL(v.videoBlob);
+      video.src = trackFeedBlobUrl(v.videoBlob);
       video.preload = 'metadata';
       video.title = 'Click to open video';
       video.addEventListener('click', (e) => {
@@ -334,20 +367,25 @@ async function loadFeed() {
     cachedScreenshots = await getMediaFromDB(sid);
   } catch { cachedScreenshots = []; }
 
-  if (events.length !== knownEventCount) {
+  const unseenEvents = events.filter(ev => !knownEventIds.has(eventKey(ev)));
+  if (unseenEvents.length > 0 || events.length !== knownEventIds.size) {
     events.sort((a, b) => a.timestamp - b.timestamp);
     const feed = $('#feed');
-    if (events.length > knownEventCount && knownEventCount > 0) {
+    if (knownEventIds.size > 0 && events.length >= knownEventIds.size && unseenEvents.length === events.length - knownEventIds.size) {
       // Append only new events to preserve expanded state
-      const newEvents = events.slice(knownEventCount);
-      newEvents.forEach(ev => feed.appendChild(renderEvent(ev)));
+      unseenEvents.sort((a, b) => a.timestamp - b.timestamp);
+      unseenEvents.forEach(ev => {
+        feed.appendChild(renderEvent(ev));
+        knownEventIds.add(eventKey(ev));
+      });
     } else {
       // Full re-render (first load, session switch, or events decreased)
+      revokeFeedBlobUrls();
       feed.innerHTML = '';
       events.forEach(ev => feed.appendChild(renderEvent(ev)));
+      knownEventIds = new Set(events.map(eventKey));
     }
     if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
-    knownEventCount = events.length;
     applyFilter();
     renderGallery(cachedScreenshots);
   } else {
@@ -375,7 +413,7 @@ $('#btn-record').addEventListener('click', async () => {
     } else {
       await send({ type: 'session:start' });
     }
-    knownEventCount = -1;
+    knownEventIds = new Set();
     loadFeed();
   } catch (err) {
     console.error('[Debug Helper] Record toggle failed:', err);
@@ -429,7 +467,7 @@ $('#btn-feed-capture').addEventListener('click', async () => {
       setTimeout(() => { btn.textContent = 'Capture'; }, 1500);
       return;
     }
-    knownEventCount = -1;
+    knownEventIds = new Set();
     loadFeed();
     btn.textContent = 'Capture';
   } catch {
@@ -510,14 +548,16 @@ async function startVideoRecording() {
           timestamp: Date.now(),
           _sessionId: sid
         };
-        // Try sending through service worker buffer first (avoids race with flushBuffer)
-        let buffered = false;
+        // Prefer writing through the service worker to avoid racing with flushBuffer.
+        // Only fall back to a direct storage write if the SW is genuinely unreachable.
         try {
           const result = await send(videoEvent);
-          buffered = result && result.buffered;
-        } catch { /* service worker unavailable */ }
-        // Fallback: write directly if buffer didn't accept (session already stopped)
-        if (!buffered) {
+          if (!result?.buffered) {
+            // SW accepted but didn't buffer (session already stopped) — request a flush
+            await send({ type: 'session:flush' });
+          }
+        } catch {
+          // SW unavailable — write directly as a last resort
           const allKeys = await chrome.storage.local.get(null);
           let lastChunk = 0;
           for (const k in allKeys) {
@@ -527,7 +567,6 @@ async function startVideoRecording() {
             }
           }
           const chunkKey = `events:${sid}:${lastChunk}`;
-          // Fresh read of just this chunk to minimize race window
           const freshData = await chrome.storage.local.get(chunkKey);
           const existing = freshData[chunkKey] || [];
           existing.push(videoEvent);
@@ -589,6 +628,7 @@ $('#btn-video').addEventListener('click', () => {
 // Render gallery from media array (screenshots + videos)
 function renderGallery(mediaItems) {
   const gallery = $('#gallery');
+  revokeGalleryBlobUrls();
   gallery.innerHTML = '';
   mediaItems.forEach(s => {
     if (s.mediaType === 'video' && s.videoBlob) {
@@ -596,7 +636,7 @@ function renderGallery(mediaItems) {
       const wrapper = document.createElement('div');
       wrapper.className = 'gallery-video';
       const video = document.createElement('video');
-      video.src = URL.createObjectURL(s.videoBlob);
+      video.src = trackGalleryBlobUrl(s.videoBlob);
       video.controls = true;
       video.preload = 'metadata';
       video.title = new Date(s.timestamp).toLocaleString();
@@ -652,7 +692,10 @@ function renderGallery(mediaItems) {
   });
 }
 
-// Open IndexedDB with store creation to avoid missing-store errors
+// Open IndexedDB with store creation to avoid missing-store errors.
+// NOTE: DB name ('debug-helper'), version (1), and store ('screenshots') must match
+// the values in lib/storage.js (Storage.DB_NAME / DB_VERSION / STORE_SCREENSHOTS).
+// Bumping the version here requires a coordinated change there too.
 function openMediaDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open('debug-helper', 1);
@@ -667,7 +710,10 @@ function openMediaDB() {
   });
 }
 
-// Read media directly from IndexedDB (blobs can't survive chrome.runtime.sendMessage)
+// Read media directly from IndexedDB (blobs can't survive chrome.runtime.sendMessage).
+// TODO: add a `sessionId` index on the screenshots store and use index.getAll(sessionId)
+// to avoid the full-table scan. Requires a DB version bump coordinated with lib/storage.js.
+// Fine for typical usage (<100 media items per session).
 async function getMediaFromDB(sessionId) {
   const db = await openMediaDB();
   return new Promise((resolve, reject) => {
@@ -690,7 +736,7 @@ async function loadScreenshots() {
 function viewSession(sessionId) {
   currentSessionId = sessionId;
   viewingHistorical = sessionId !== activeSessionId;
-  knownEventCount = -1; // force reload
+  knownEventIds = new Set(); // force full reload
   // Switch to feed tab
   $$('.tab').forEach(t => t.classList.remove('active'));
   $$('.tab-content').forEach(t => t.classList.remove('active'));
@@ -718,10 +764,11 @@ async function loadFeedForSession(sessionId) {
   cachedScreenshots = await getMediaFromDB(sid);
   events.sort((a, b) => a.timestamp - b.timestamp);
   const feed = $('#feed');
+  revokeFeedBlobUrls();
   feed.innerHTML = '';
   events.forEach(ev => feed.appendChild(renderEvent(ev)));
   if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
-  knownEventCount = events.length;
+  knownEventIds = new Set(events.map(eventKey));
   applyFilter();
   renderGallery(cachedScreenshots);
 }
@@ -925,7 +972,8 @@ $('#btn-delete-all').addEventListener('click', async () => {
   for (const s of sessions) await send({ type: 'session:clear', sessionId: s.id });
   currentSessionId = null;
   viewingHistorical = false;
-  knownEventCount = 0;
+  knownEventIds = new Set();
+  revokeAllBlobUrls();
   $('#feed').innerHTML = '';
   $('#gallery').innerHTML = '';
   loadHistory();
@@ -1013,11 +1061,16 @@ chrome.storage.onChanged.addListener((changes) => {
         if (added.length > 0) {
           const feed = $('#feed');
           let hasScreenshot = false;
+          let appendedAny = false;
           added.forEach(ev => {
+            const k = eventKey(ev);
+            if (knownEventIds.has(k)) return; // skip duplicates
+            knownEventIds.add(k);
             feed.appendChild(renderEvent(ev));
-            knownEventCount++;
+            appendedAny = true;
             if (ev.type === 'event:screenshot' || ev.type === 'event:video') hasScreenshot = true;
           });
+          if (!appendedAny) continue;
           applyFilter();
           if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
           // Refresh gallery when new media events arrive
@@ -1050,7 +1103,8 @@ async function loadSessionState() {
     if (currentSessionId !== state.session.id) {
       currentSessionId = state.session.id;
       viewingHistorical = false;
-      knownEventCount = 0;
+      knownEventIds = new Set();
+      revokeFeedBlobUrls();
       $('#feed').innerHTML = '';
       // Auto-enable auto-scroll when new recording starts
       autoScroll = true;
@@ -1081,6 +1135,15 @@ async function loadSessionState() {
   }
   updateRecordButton();
 }
+
+// Cleanup on sidepanel close — stop capture stream and revoke blob URLs
+window.addEventListener('beforeunload', () => {
+  if (videoRecorder && videoRecorder.state === 'recording' && videoStream) {
+    // Recording data will be lost, but at least the capture stream won't leak
+    videoStream.getTracks().forEach(t => t.stop());
+  }
+  revokeAllBlobUrls();
+});
 
 // Initial load — check if popup requested a specific session
 (async () => {
