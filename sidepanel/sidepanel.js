@@ -538,6 +538,7 @@ $('#note-input').addEventListener('keydown', (e) => {
 // request); reused for every screenshot + any video recording so Capture keeps
 // working after the user switches tabs.
 let sessionStream = null;
+let sessionTabId = null; // cached for fast onRemoved matching
 
 async function openSessionStream() {
   if (sessionStream && sessionStream.getTracks().some(t => t.readyState === 'live')) {
@@ -583,6 +584,12 @@ async function openSessionStream() {
   });
 
   sessionStream = stream;
+  // Cache the recording tab id so chrome.tabs.onRemoved can match synchronously
+  // and clear local state before the stream's 'ended' event has a chance to fire.
+  try {
+    const state = await send({ type: 'session:get' });
+    sessionTabId = state?.session?.tabId ?? null;
+  } catch { sessionTabId = null; }
   return stream;
 }
 
@@ -591,7 +598,20 @@ function closeSessionStream() {
     sessionStream.getTracks().forEach(t => t.stop());
     sessionStream = null;
   }
+  sessionTabId = null;
 }
+
+// Tab close fires earlier than the MediaStreamTrack 'ended' event, so use it
+// to clear local session state immediately. Prevents a race where the user
+// clicks Capture/Video in the gap and gets a raw tabCapture error.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (sessionTabId == null || tabId !== sessionTabId) return;
+  sessionTabId = null;
+  activeSessionId = null;
+  $('#note-bar').classList.add('hidden');
+  updateRecordButton();
+  updateRecordingTarget();
+});
 
 // Render a single frame from the given MediaStream to a PNG data URL.
 async function grabFrameFromStream(stream) {
@@ -758,6 +778,12 @@ async function startVideoRecording() {
             await chrome.storage.local.set({ [sessionKey]: sessionData });
           }
         }
+
+        // The storage listener may have run loadScreenshots mid-save with a
+        // pre-blob IDB snapshot, leaving cachedScreenshots without the video.
+        // Force an authoritative re-render so the feed thumb picks up the
+        // freshly-saved blob.
+        if (currentSessionId === sid) loadFeedForSession(sid);
       }
     };
     videoRecorder.start(1000); // collect in 1s chunks
