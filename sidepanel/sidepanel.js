@@ -46,6 +46,70 @@ async function send(msg) {
   return chrome.runtime.sendMessage(msg);
 }
 
+// Lightweight toast notifications. Multiple toasts stack; each auto-dismisses.
+function showToast(message, variant = 'info', durationMs = 3200) {
+  const container = $('#toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + (variant || 'info');
+  toast.textContent = message;
+  container.appendChild(toast);
+  // Force reflow so the transition from hidden → visible animates.
+  void toast.offsetWidth;
+  toast.classList.add('visible');
+  setTimeout(() => {
+    toast.classList.remove('visible');
+    setTimeout(() => toast.remove(), 220);
+  }, durationMs);
+}
+
+// Shows which tab the session is recording so the user knows where Capture/Video
+// will fire, since the sidepanel targets session.tabId — not the visible tab.
+async function updateRecordingTarget() {
+  const bar = $('#recording-target');
+  const info = $('#recording-target-info');
+  if (!bar || !info) return;
+
+  const onFeedTab = document.querySelector('.tab[data-tab="feed"]')?.classList.contains('active');
+  if (!activeSessionId || !onFeedTab) {
+    bar.classList.add('hidden');
+    bar.classList.remove('unavailable');
+    return;
+  }
+
+  let state;
+  try { state = await send({ type: 'session:get' }); } catch { return; }
+  const tabId = state?.session?.tabId;
+  if (!tabId) {
+    bar.classList.add('hidden');
+    return;
+  }
+
+  bar.classList.remove('hidden');
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const url = tab.url || state.session.url || '';
+    const title = tab.title || url;
+    info.title = url;
+
+    const restricted = /^(chrome|chrome-extension|edge|about|devtools|view-source|chrome-search):/i.test(url)
+      || url.startsWith('https://chrome.google.com/webstore')
+      || url.startsWith('https://chromewebstore.google.com');
+    const streamLive = !!(sessionStream && sessionStream.getTracks().some(t => t.readyState === 'live'));
+
+    let suffix = '';
+    if (restricted) suffix = ' — restricted page, capture disabled';
+    else if (!streamLive) suffix = ' — capture stream not open (click Capture to retry)';
+    info.textContent = title + suffix;
+    bar.classList.toggle('unavailable', restricted || !streamLive);
+  } catch {
+    // Tab closed or otherwise inaccessible
+    bar.classList.add('unavailable');
+    info.textContent = 'Recording tab is no longer available';
+    info.title = '';
+  }
+}
+
 // Tab switching
 $$('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -56,8 +120,10 @@ $$('.tab').forEach(tab => {
     $('#filters').classList.toggle('hidden', tab.dataset.tab !== 'feed');
     if (tab.dataset.tab !== 'feed') {
       $('#note-bar').classList.add('hidden');
-    } else if (activeSessionId) {
-      $('#note-bar').classList.remove('hidden');
+      $('#recording-target').classList.add('hidden');
+    } else {
+      if (activeSessionId) $('#note-bar').classList.remove('hidden');
+      updateRecordingTarget();
     }
     if (tab.dataset.tab === 'history') loadHistory();
   });
@@ -349,6 +415,7 @@ async function loadFeed() {
   }
 
   updateRecordButton();
+  updateRecordingTarget();
 
   if (!currentSessionId) return;
 
@@ -409,12 +476,23 @@ $('#btn-record').addEventListener('click', async () => {
     if (activeSessionId) {
       // Stop video recording if active — wait for save to complete before ending session
       if (videoRecorder && videoRecorder.state === 'recording') await stopVideoRecording();
+      closeSessionStream();
       await send({ type: 'session:stop' });
     } else {
       await send({ type: 'session:start' });
+      // Open the persistent capture stream while this click gesture is still
+      // valid and the recording tab is active — this is the only reliable
+      // window for chrome.tabCapture to accept the target tab.
+      try {
+        await openSessionStream();
+      } catch (err) {
+        console.warn('[Debug Helper] Could not open capture stream at session start:', err);
+        showToast('Capture unavailable — first Capture/Video click will retry', 'warn');
+      }
     }
     knownEventIds = new Set();
     loadFeed();
+    updateRecordingTarget();
   } catch (err) {
     console.error('[Debug Helper] Record toggle failed:', err);
   } finally {
@@ -455,14 +533,105 @@ $('#note-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') addNote();
 });
 
+// Persistent tab-capture stream, kept alive for the whole recording session.
+// Opened while the recording tab is active (so chrome.tabCapture accepts the
+// request); reused for every screenshot + any video recording so Capture keeps
+// working after the user switches tabs.
+let sessionStream = null;
+
+async function openSessionStream() {
+  if (sessionStream && sessionStream.getTracks().some(t => t.readyState === 'live')) {
+    return sessionStream;
+  }
+  sessionStream = null;
+
+  const streamReq = await send({ type: 'video:streamId' });
+  if (streamReq?.error) throw new Error(streamReq.error);
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      mandatory: {
+        chromeMediaSource: 'tab',
+        chromeMediaSourceId: streamReq.streamId,
+      },
+    },
+  });
+
+  // If Chrome's "Stop sharing" UI, a tab close, or a discard kills the stream,
+  // drop our ref, save any in-progress video clip, and notify the user. The SW
+  // separately auto-stops the session on tab close/discard.
+  stream.getTracks().forEach(t => {
+    t.addEventListener('ended', () => {
+      if (sessionStream !== stream) return;
+      sessionStream = null;
+      showToast('Recording tab ended — capture stream closed', 'warn');
+      if (videoRecorder && videoRecorder.state === 'recording') {
+        // Fire-and-forget: persists the partial clip via the existing onstop path
+        stopVideoRecording().catch(err => console.error('[Debug Helper] Stop video on stream end failed:', err));
+      }
+      updateRecordingTarget();
+    });
+  });
+
+  sessionStream = stream;
+  return stream;
+}
+
+function closeSessionStream() {
+  if (sessionStream) {
+    sessionStream.getTracks().forEach(t => t.stop());
+    sessionStream = null;
+  }
+}
+
+// Render a single frame from the given MediaStream to a PNG data URL.
+async function grabFrameFromStream(stream) {
+  const video = document.createElement('video');
+  video.srcObject = stream;
+  video.muted = true;
+  await video.play();
+  if (video.readyState < 2) {
+    await new Promise((resolve, reject) => {
+      video.addEventListener('loadeddata', resolve, { once: true });
+      video.addEventListener('error', () => reject(new Error('video load failed')), { once: true });
+    });
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  video.pause();
+  video.srcObject = null;
+  return canvas.toDataURL('image/png');
+}
+
 // Feed capture screenshot button
 $('#btn-feed-capture').addEventListener('click', async () => {
   const btn = $('#btn-feed-capture');
   btn.disabled = true;
   btn.textContent = '...';
   try {
-    const result = await send({ type: 'screenshot:capture' });
+    if (!activeSessionId) {
+      showToast('Start a recording before capturing', 'warn');
+      btn.textContent = 'Capture';
+      return;
+    }
+    if (!sessionStream) {
+      // Session likely started outside the sidepanel (popup/keyboard), or the
+      // stream died — try to open one now while this click gesture is fresh.
+      try { await openSessionStream(); } catch (err) {
+        showToast('Capture unavailable: ' + (err?.message || 'stream closed') + ' — switch to the recording tab and retry', 'error');
+        btn.textContent = 'Failed';
+        setTimeout(() => { btn.textContent = 'Capture'; }, 1500);
+        updateRecordingTarget();
+        return;
+      }
+    }
+    const dataUrl = await grabFrameFromStream(sessionStream);
+    const result = await send({ type: 'screenshot:saveDataUrl', dataUrl });
     if (result?.error) {
+      showToast('Capture failed: ' + result.error, 'error');
       btn.textContent = 'Failed';
       setTimeout(() => { btn.textContent = 'Capture'; }, 1500);
       return;
@@ -470,7 +639,9 @@ $('#btn-feed-capture').addEventListener('click', async () => {
     knownEventIds = new Set();
     loadFeed();
     btn.textContent = 'Capture';
-  } catch {
+  } catch (err) {
+    console.error('[Debug Helper] Screenshot capture failed:', err);
+    showToast('Capture failed: ' + (err?.message || 'unknown error'), 'error');
     btn.textContent = 'Failed';
     setTimeout(() => { btn.textContent = 'Capture'; }, 1500);
   } finally {
@@ -481,35 +652,29 @@ $('#btn-feed-capture').addEventListener('click', async () => {
 // Video recording
 let videoRecorder = null;
 let videoChunks = [];
-let videoStream = null;
 let videoSessionId = null; // capture session ID at recording start
 
 async function startVideoRecording() {
   const btn = $('#btn-video');
   if (!activeSessionId) {
+    showToast('Start a recording before capturing video', 'warn');
     btn.textContent = 'Record first';
     setTimeout(() => { btn.textContent = 'Video'; }, 1500);
     return;
   }
   try {
-    const result = await send({ type: 'video:streamId' });
-    if (result?.error) {
-      btn.textContent = 'Failed';
-      setTimeout(() => { btn.textContent = 'Video'; }, 1500);
-      return;
-    }
-    videoStream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        mandatory: {
-          chromeMediaSource: 'tab',
-          chromeMediaSourceId: result.streamId,
-        }
+    if (!sessionStream) {
+      try { await openSessionStream(); } catch (err) {
+        showToast('Video failed: ' + (err?.message || 'stream closed') + ' — switch to the recording tab and retry', 'error');
+        btn.textContent = 'Failed';
+        setTimeout(() => { btn.textContent = 'Video'; }, 1500);
+        updateRecordingTarget();
+        return;
       }
-    });
+    }
     videoChunks = [];
     videoSessionId = currentSessionId;
-    videoRecorder = new MediaRecorder(videoStream, { mimeType: 'video/webm;codecs=vp9' });
+    videoRecorder = new MediaRecorder(sessionStream, { mimeType: 'video/webm;codecs=vp9' });
     videoRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) videoChunks.push(e.data);
     };
@@ -579,12 +744,15 @@ async function startVideoRecording() {
     btn.classList.add('recording-video');
   } catch (err) {
     console.error('[Debug Helper] Video recording failed:', err);
+    showToast('Video failed: ' + (err?.message || 'unknown error'), 'error');
     btn.textContent = 'Failed';
     setTimeout(() => { btn.textContent = 'Video'; }, 1500);
   }
 }
 
-// Returns a promise that resolves after onstop handler completes
+// Returns a promise that resolves after onstop handler completes.
+// NOTE: does NOT stop sessionStream tracks — the stream persists for the rest
+// of the session so subsequent screenshots / video clips keep working.
 function stopVideoRecording() {
   const btn = $('#btn-video');
   btn.textContent = 'Saving...';
@@ -593,23 +761,13 @@ function stopVideoRecording() {
     if (videoRecorder && videoRecorder.state !== 'inactive') {
       const origOnStop = videoRecorder.onstop;
       videoRecorder.onstop = async (e) => {
-        // Run original handler first (saves blob + event)
         if (origOnStop) await origOnStop(e);
-        // Clean up stream and recorder AFTER save completes
-        if (videoStream) {
-          videoStream.getTracks().forEach(t => t.stop());
-          videoStream = null;
-        }
         videoRecorder = null;
         btn.textContent = 'Video';
         resolve();
       };
       videoRecorder.stop();
     } else {
-      if (videoStream) {
-        videoStream.getTracks().forEach(t => t.stop());
-        videoStream = null;
-      }
       videoRecorder = null;
       btn.textContent = 'Video';
       resolve();
@@ -802,7 +960,7 @@ async function loadHistory() {
         <input type="checkbox" class="session-check" data-id="${s.id}">
         <div class="session-info">
           <div class="session-title ${title ? '' : 'untitled'}" data-id="${s.id}">${title || 'Untitled session'}</div>
-          <div class="url">${escHtml(s.url)}</div>
+          <div class="url" title="${escHtml(s.url)}">${escHtml(s.url)}</div>
           <div class="meta">${start} · ${dur} · ${s.eventCount} events${isActive ? ' · <strong>viewing</strong>' : ''}</div>
         </div>
       </div>
@@ -1134,14 +1292,13 @@ async function loadSessionState() {
     noteBar.classList.add('hidden');
   }
   updateRecordButton();
+  updateRecordingTarget();
 }
 
-// Cleanup on sidepanel close — stop capture stream and revoke blob URLs
+// Cleanup on sidepanel close — stop the session capture stream (video recording
+// data in progress will be lost, but the stream won't leak) and revoke blob URLs.
 window.addEventListener('beforeunload', () => {
-  if (videoRecorder && videoRecorder.state === 'recording' && videoStream) {
-    // Recording data will be lost, but at least the capture stream won't leak
-    videoStream.getTracks().forEach(t => t.stop());
-  }
+  closeSessionStream();
   revokeAllBlobUrls();
 });
 

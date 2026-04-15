@@ -23,6 +23,11 @@
       <button class="tab" data-tab="export">Export</button>
     </nav>
 
+    <div class="recording-target hidden" id="recording-target" title="Capture and video target the tab where recording started, not the currently visible tab">
+      <span class="recording-target-label">Capturing:</span>
+      <span class="recording-target-info" id="recording-target-info">—</span>
+    </div>
+
     <div class="filters" id="filters">
       <button class="filter-btn active" data-filter="all">All</button>
       <button class="filter-btn" data-filter="event:dom">DOM</button>
@@ -93,6 +98,7 @@
       </div>
     </section>
   </div>
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
   <script src="sidepanel.js"></script>
 </body>
 </html>

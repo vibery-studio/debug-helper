@@ -69,6 +69,7 @@ const SW = {
       case 'session:list': return Storage.listSessions();
       case 'session:flush': return this.flushBuffer();
       case 'screenshot:capture': return this.captureScreenshot(msg.tabId);
+      case 'screenshot:saveDataUrl': return this.saveScreenshotDataUrl(msg.dataUrl);
       case 'video:streamId': return this.getTabStreamId(msg.tabId);
       case 'screenshot:save': return this.saveAnnotatedScreenshot(msg);
       case 'screenshot:list': return this.listScreenshots(msg.sessionId);
@@ -255,6 +256,25 @@ const SW = {
     return entry;
   },
 
+  // Persist a screenshot that was captured client-side (sidepanel grabs a frame
+  // from the tab stream via tabCapture, which avoids the <all_urls> requirement
+  // that chrome.tabs.captureVisibleTab imposes).
+  async saveScreenshotDataUrl(dataUrl) {
+    if (!dataUrl) return { error: 'Missing dataUrl' };
+    const session = await Storage.getCurrentSession();
+    if (!session) return { error: 'No active session' };
+
+    const entry = await Storage.saveScreenshot(session.id, dataUrl, []);
+    await this.flushBuffer();
+    await Storage.addEvents(session.id, [{
+      type: 'event:screenshot',
+      timestamp: entry.timestamp,
+      screenshotId: entry.id,
+      _sessionId: session.id
+    }]);
+    return entry;
+  },
+
   async saveAnnotatedScreenshot(msg) {
     return Storage.updateScreenshot(msg.screenshotId, {
       annotatedDataUrl: msg.annotatedDataUrl,
@@ -386,6 +406,33 @@ const SW = {
     }
   }
 };
+
+// Auto-stop the session if the recording tab is closed or discarded.
+// Preserves whatever events have already been buffered.
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  try {
+    const session = await Storage.getCurrentSession();
+    if (!session || session.endTime || session.tabId !== tabId) return;
+    console.log('[Debug Helper] Recording tab closed, auto-stopping session');
+    await SW.stopSession();
+  } catch (err) {
+    console.error('[Debug Helper] Failed to auto-stop on tab close:', err);
+  }
+});
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+  // Chrome's memory saver can discard a tab — the tab id stays valid but the
+  // page is unloaded, which also kills any tabCapture stream attached to it.
+  if (!changeInfo.discarded) return;
+  try {
+    const session = await Storage.getCurrentSession();
+    if (!session || session.endTime || session.tabId !== tabId) return;
+    console.log('[Debug Helper] Recording tab discarded, auto-stopping session');
+    await SW.stopSession();
+  } catch (err) {
+    console.error('[Debug Helper] Failed to auto-stop on tab discard:', err);
+  }
+});
 
 // Keyboard shortcut commands
 chrome.commands.onCommand.addListener(async (command) => {
